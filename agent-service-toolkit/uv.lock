@@ -67,6 +67,7 @@ client = [
     { name = "pydantic" },
     { name = "python-dotenv" },
     { name = "streamlit" },
+    { name = "streamlit-mermaid" },
 ]
 dev = [
     { name = "langgraph-cli", extra = ["inmem"] },
@@ -130,6 +131,7 @@ client = [
     { name = "pydantic", specifier = "~=2.13.4" },
     { name = "python-dotenv", specifier = "~=1.2.2" },
     { name = "streamlit", specifier = "~=1.58.0" },
+    { name = "streamlit-mermaid", specifier = ">=0.2.0,<0.3.0" },
 ]
 dev = [
     { name = "langgraph-cli", extras = ["inmem"] },
@@ -4908,6 +4910,15 @@ sdist = { url = "https://files.pythonhosted.org/packages/91/74/20dac6d6200d6ec0e
 wheels = [
     { url = "https://files.pythonhosted.org/packages/df/84/14c36a92fb24f8e1cea452f53b0744b5da69d52cdd2fe22e71e6fbf765d5/streamlit-1.58.0-py3-none-any.whl", hash = "sha256:4ca8a7afc5bd16a5f176ccf4be1e34e8121cad0240becd127fb58a103ea3178d", size = 9219185, upload-time = "2026-05-28T18:02:41.993Z" },
 ]
+
+[[package]]
+name = "streamlit-mermaid"
+version = "0.2.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "streamlit" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/4b/d7/cfb2b1fdebc736cd22d31f5f87debf8550c3bf616ebd290a9c2bf7d7e0a6/streamlit-mermaid-0.2.0.tar.gz", hash = "sha256:a7883f63be991a378b2c327efae9a03ae49e830481659ae1a955bf68597f9c48", size = 3762617, upload-time = "2023-07-09T02:27:48.522Z" }
 
 [[package]]
 name = "structlog"

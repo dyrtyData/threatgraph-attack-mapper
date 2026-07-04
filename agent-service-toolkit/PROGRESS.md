@@ -94,6 +94,90 @@ Filled in by later phases (dry-run deliverable — informs the live-run cut list
 | Guardrails AI validation | _tbd_ | Phase 3 |
 | Mem0 recall/write round-trip | _tbd_ | Phase 4 |
 | Langfuse experiment run | _tbd_ | Phase 5 |
-| Streamlit UI build | _tbd_ | Phase 1/3 |
+| Streamlit UI build | ~20 min (Phase 1 skeleton) | Phase 1/3 — custom-message branch + Mermaid renderer w/ CDN fallback |
 | Vite + React + Tailwind client build | _tbd_ | Phase 6 |
 | Open WebUI wiring | _tbd_ | Phase 7 |
+
+---
+
+## 2026-07-04 17:24 EDT — Phase 1: Walking skeleton (`threatgraph` end-to-end + Mermaid render)
+
+Thinnest vertical slice through the whole stack: a registered `threatgraph` `StateGraph`
+that reuses the input safety gate and returns **canned** mechanics / Mermaid / defense
+config in a terminal `custom` `ChatMessage`, discovered by the service, reachable via the
+FastAPI `/threatgraph/invoke` endpoint, and rendered by Streamlit. This surfaced the two
+highest-integration-risk items early — the registry/streaming/`custom_data` contract and
+Mermaid-in-Streamlit rendering — before any real logic exists. Wall-clock: **~55 min**.
+
+### Built
+
+- **`src/agents/threatgraph.py`** — `ThreatGraphState(MessagesState, total=False)`; the
+  `safeguard_input`/`check_safety`/`block_unsafe_content` idiom lifted verbatim from
+  `research_assistant.py`; stub `retrieve → extractor → graph_architect → defensive_guardrail`
+  linear pipeline. The terminal node builds an internally-consistent canned payload (the
+  Mermaid nodes, extracted mechanics, and defense config all reference the same kill-chain
+  technique IDs: T1566.001 → T1204.002 → T1059.001 → T1486) and emits it via the
+  `CustomData` helper (`data → ChatMessage(content=[data], role="custom")`).
+- **`src/agents/agents.py`** — one import + one `agents["threatgraph"]` dict entry (the
+  toolkit's only discovery mechanism).
+- **`src/streamlit_app.py`** — `render_mermaid()` (primary `streamlit-mermaid`
+  `st_mermaid`, with a `components.html` + `mermaid@11` CDN fallback, explicit height +
+  `scrolling=True`) and `draw_threatgraph_output()`; the `case "custom"` arm now branches on
+  a `mermaid` key so threatgraph output renders while the bg-task-agent `TaskData` path is
+  untouched.
+- **`pyproject.toml`** — added `streamlit-mermaid` to the `client` group.
+- Tests: `tests/agents/test_threatgraph.py` (benign path populates `mermaid`/`defense_config`
+  + terminal `custom` message; unsafe path routes to `block_unsafe_content`),
+  `tests/agents/test_agent_loading.py` (+registry/no-op-load asserts),
+  `tests/app/test_streamlit_app.py` (+a `custom` mermaid message renders without error).
+
+### Deviation: `streamlit-mermaid` pin (0.2.0, not 0.3.0)
+
+`streamlit-mermaid==0.3.0` pins `setuptools>=75.6,<76`, which conflicts with the toolkit's
+`setuptools ~=82.0.1` (unresolvable). Pinned `>=0.2.0,<0.3.0` instead — 0.2.0 depends only
+on `streamlit` and renders identically for our use. Recorded here per the dry-run posture;
+the `components.html` CDN fallback is the safety net if the package ever misbehaves.
+
+### Verification
+
+- `uv run pytest tests/agents/test_threatgraph.py tests/agents/test_agent_loading.py tests/app -q` → **22 passed**.
+- Full suite `uv run pytest -q` → **131 passed, 2 skipped** (was 126/2 at Phase 0; +5 new).
+- Registry: `get_all_agent_info()` includes `threatgraph`.
+- FastAPI `TestClient`: GET `/info` lists `threatgraph`; POST `/threatgraph/invoke` →
+  `200`, `type="custom"`, `custom_data` = `{mechanics, mermaid, defense_config}` (4 defense
+  entries). `ruff check` clean on all changed files.
+- Manual (service + `streamlit run`) verification: **confirmed** — benign snippet renders the
+  kill-chain Mermaid graph (T1566.001 → T1204.002 → T1059.001 → T1486), the 4-row defense-config
+  table, and the extracted-mechanics section. `streamlit-mermaid` 0.2.0 was the primary renderer;
+  CDN fallback not needed.
+
+### Operational lessons (for future projects branching off this base)
+
+Two friction points hit during the Phase 1 manual run — documented so the next domain project
+forking off `main` doesn't rediscover them:
+
+1. **Always launch via `uv run`, never bare `python`.** Running `python src/run_service.py`
+   directly used the ambient global interpreter (miniconda) and died with
+   `ModuleNotFoundError: No module named 'langfuse'`. The project deps live in the `uv`-managed
+   `.venv`, so use `uv run python src/run_service.py` and `uv run streamlit run src/streamlit_app.py`.
+2. **Port 8080 collides with the local CTO-brain RAG server.** The toolkit's FastAPI service
+   defaults to `:8080`, but this machine already runs the `askCTObrain` server on `:8080`
+   (`/health`→200, `/info`→404). Symptom: `[Errno 48] address already in use` on the service,
+   and Streamlit shows `404 Not Found ... /info` (the brain answers, not the agent service).
+   Fix: run the agent service on a free port and point the client at it —
+   `PORT=8081 uv run python src/run_service.py` and
+   `AGENT_URL=http://localhost:8081 uv run streamlit run src/streamlit_app.py`.
+
+### Git housekeeping: `main` promoted to the clean shared base
+
+To support running unrelated future projects as parallel worktree branches off a common base,
+`main` was **fast-forwarded** from `a502620` to `f138a96` — the merge commit that contains the
+full `agent-service-toolkit` + ATT&CK tooling but **no PF-001 domain code**. Net effect:
+
+- `main` = clean shared toolkit base (96 toolkit files tracked, zero threatgraph code).
+- All PF-001 work stays exclusively on the `glo-21-…` branch and is **never merged** to `main`.
+- New domains start with `git worktree add <path> -b <branch> main`, inheriting the toolkit.
+
+This was a pure pointer fast-forward (no history rewrite; reversible via `git branch -f main a502620`).
+The main worktree's pre-existing untracked base copies were tucked into a `git stash -u` safety net
+first (git-ignored `.venv`/corpus excluded); the local-only `CLAUDE.md` was preserved out-of-band.

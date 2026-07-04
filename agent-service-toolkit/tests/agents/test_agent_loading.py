@@ -18,6 +18,17 @@ class TestAgentLoading:
         await load_agent("chatbot")
         # Should not raise any exceptions
 
+    def test_threatgraph_registered(self):
+        """The threatgraph agent is discoverable through the registry dict."""
+        assert "threatgraph" in agents
+
+    @pytest.mark.asyncio
+    async def test_load_agent_threatgraph_static(self):
+        """threatgraph is a static (non-lazy) agent, so load_agent is a no-op."""
+        await load_agent("threatgraph")
+        # Should not raise; get_agent returns the compiled graph directly.
+        assert get_agent("threatgraph") is not None
+
     @pytest.mark.asyncio
     async def test_load_agent_lazy_agent(self):
         """Test loading a lazy agent."""

@@ -79,6 +79,9 @@ client = [
     "pydantic ~=2.13.4",
     "python-dotenv ~=1.2.2",
     "streamlit~=1.58.0",
+    # 0.3.0 pins setuptools<76 which conflicts with the project's setuptools ~=82;
+    # 0.2.0 only depends on streamlit and renders identically for our use.
+    "streamlit-mermaid>=0.2.0,<0.3.0",
 ]
 
 [tool.ruff]

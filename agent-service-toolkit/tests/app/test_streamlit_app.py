@@ -145,6 +145,51 @@ async def test_app_streaming(mock_agent_client):
 
 
 @pytest.mark.asyncio
+async def test_app_threatgraph_custom_mermaid(mock_agent_client):
+    """A threatgraph `custom` message (Mermaid + defense config) renders without error."""
+    at = AppTest.from_file("../../src/streamlit_app.py").run()
+
+    PROMPT = "Spearphishing attachment led to PowerShell and ransomware."
+    custom_msg = ChatMessage(
+        type="custom",
+        content="",
+        custom_data={
+            "mermaid": "graph TD\n    A[Initial Access] --> B[Execution]\n    B --> C[Impact]\n",
+            "mechanics": [
+                {
+                    "tactic": "Initial Access",
+                    "technique_id": "T1566.001",
+                    "name": "Spearphishing Attachment",
+                    "evidence": "macro-enabled attachment",
+                }
+            ],
+            "defense_config": [
+                {
+                    "technique_id": "T1566.001",
+                    "mitigation_id": "M1017",
+                    "action": "User training",
+                    "rationale": "Reduces likelihood of opening the attachment.",
+                }
+            ],
+        },
+    )
+
+    async def amessage_iter() -> AsyncGenerator[ChatMessage, None]:
+        yield custom_msg
+
+    mock_agent_client.astream = Mock(return_value=amessage_iter())
+
+    at.toggle[0].set_value(True)  # Use Streaming = True
+    at.chat_input[0].set_value(PROMPT).run()
+    print(at)
+
+    assert at.chat_message[0].avatar == "user"
+    assert at.chat_message[0].markdown[0].value == PROMPT
+    assert at.chat_message[1].avatar == "assistant"
+    assert not at.exception
+
+
+@pytest.mark.asyncio
 async def test_app_init_error(mock_agent_client):
     """Test the app with an error in the agent initialization"""
     at = AppTest.from_file("../../src/streamlit_app.py").run()

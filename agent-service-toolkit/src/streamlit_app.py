@@ -5,6 +5,7 @@ import uuid
 from collections.abc import AsyncGenerator
 
 import streamlit as st
+import streamlit.components.v1 as components
 from dotenv import load_dotenv
 from pydantic import ValidationError
 
@@ -12,6 +13,13 @@ from client import AgentClient, AgentClientError
 from schema import ChatHistory, ChatMessage
 from schema.task_data import TaskData, TaskDataStatus
 from voice import VoiceManager
+
+# Primary Mermaid renderer (DQ6). Guarded so the app still runs (via the CDN fallback
+# below) when the optional `streamlit-mermaid` package is not installed.
+try:
+    import streamlit_mermaid as stmd
+except ImportError:  # pragma: no cover - exercised only when the package is absent
+    stmd = None
 
 # A Streamlit app for interacting with the langgraph agent via a simple chat interface.
 # The app has three main functions which are all run async:
@@ -303,6 +311,60 @@ async def main() -> None:
             await handle_feedback()
 
 
+def render_mermaid(code: str, height: int = 520) -> None:
+    """Render a Mermaid diagram.
+
+    Primary path uses the `streamlit-mermaid` package (DQ6). If it is unavailable or
+    errors, fall back to a sandboxed `components.html` iframe loading `mermaid@11` from a
+    CDN (explicit height + scrolling, since the sandboxed iframe does not auto-resize).
+    """
+    if stmd is not None:
+        try:
+            stmd.st_mermaid(code, height=f"{height}px")
+            return
+        except Exception:  # noqa: BLE001 - fall back to the CDN renderer on any failure
+            pass
+
+    escaped = code.replace("`", "\\`")
+    html = f"""
+    <div class="mermaid">{code}</div>
+    <script type="module">
+      import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs";
+      mermaid.initialize({{ startOnLoad: false }});
+      const code = `{escaped}`;
+      const el = document.querySelector(".mermaid");
+      const {{ svg }} = await mermaid.render("threatgraph-diagram", code);
+      el.innerHTML = svg;
+    </script>
+    """
+    components.html(html, height=height, scrolling=True)
+
+
+def draw_threatgraph_output(custom_data: dict) -> None:
+    """Render a `threatgraph` custom message: Mermaid attack graph + defense config."""
+    mermaid_code = custom_data.get("mermaid", "")
+    st.markdown("#### 🗺️ Attack graph")
+    if mermaid_code:
+        render_mermaid(mermaid_code)
+    else:
+        st.info("No attack graph was produced for this submission.")
+
+    mechanics = custom_data.get("mechanics")
+    if mechanics:
+        with st.expander("Extracted mechanics"):
+            st.table(mechanics)
+
+    st.markdown("#### 🛡️ Defense configuration")
+    defense_config = custom_data.get("defense_config")
+    if defense_config:
+        try:
+            st.table(defense_config)
+        except Exception:  # noqa: BLE001 - fall back to raw JSON for unexpected shapes
+            st.json(defense_config)
+    else:
+        st.info("No defense configuration was produced for this submission.")
+
+
 async def draw_messages(
     messages_agen: AsyncGenerator[ChatMessage | str, None],
     is_new: bool = False,
@@ -431,6 +493,20 @@ async def draw_messages(
                             status.update(state="complete")
 
             case "custom":
+                if is_new:
+                    st.session_state.messages.append(msg)
+
+                # ThreatGraph output: a Mermaid attack graph + defense config carried in
+                # custom_data. Distinguished from the bg-task-agent's TaskData by the
+                # presence of a `mermaid` key.
+                if "mermaid" in msg.custom_data:
+                    if last_message_type != "ai":
+                        last_message_type = "ai"
+                        st.session_state.last_message = st.chat_message("ai")
+                    with st.session_state.last_message:
+                        draw_threatgraph_output(msg.custom_data)
+                    continue
+
                 # CustomData example used by the bg-task-agent
                 # See:
                 # - src/agents/utils.py CustomData
@@ -441,9 +517,6 @@ async def draw_messages(
                     st.error("Unexpected CustomData message received from agent")
                     st.write(msg.custom_data)
                     st.stop()
-
-                if is_new:
-                    st.session_state.messages.append(msg)
 
                 if last_message_type != "task":
                     last_message_type = "task"
