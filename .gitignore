@@ -28,3 +28,6 @@ graphify-out/
 # The distilled data/attack/attack_corpus.jsonl + .seed.jsonl ARE tracked.
 data/attack/enterprise-attack.json
 .humanlayer/workspace.local.json
+
+# Riptide artifacts (cloud-synced)
+.humanlayer/tasks/
