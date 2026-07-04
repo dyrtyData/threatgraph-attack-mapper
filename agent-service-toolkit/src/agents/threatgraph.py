@@ -14,7 +14,8 @@ Node status:
   * ``retrieve``            -> hybrid BM25 + dense RRF + cross-encoder rerank (Phase 2) ✅
   * ``extractor``           -> structured ``ExtractedMechanics`` grounded in ATT&CK (Phase 2) ✅
   * ``graph_architect``     -> Mermaid rendered from mechanics + parse-check (Phase 2) ✅
-  * ``defensive_guardrail`` -> Guardrails-AI-validated ``DefenseConfig`` (Phase 3, still canned)
+  * ``defensive_guardrail`` -> Guardrails-AI-validated ``DefenseConfig``, mitigations grounded
+                               in the retrieved ``attack_context`` (Phase 3) ✅
 
 The canned constants below are retained as fail-open fallbacks (no retrieval hit, empty
 extraction, or a Mermaid parse-check failure degrade gracefully to them).
@@ -29,11 +30,12 @@ from langchain_core.runnables import RunnableConfig
 from langgraph.graph import END, MessagesState, StateGraph
 from langgraph.managed import RemainingSteps
 
+from agents.guardrails import validate_defense_config
 from agents.retrieval import CONTEXT_K, retrieve_attack_context
 from agents.safeguard import Safeguard, SafeguardOutput, SafetyAssessment
 from agents.utils import CustomData
 from core import get_model, settings
-from schema.schema import ExtractedMechanics
+from schema.schema import DefenseConfig, ExtractedMechanics
 
 logger = logging.getLogger(__name__)
 
@@ -395,17 +397,158 @@ async def graph_architect(state: ThreatGraphState, config: RunnableConfig) -> Th
     return {"mermaid": mermaid}
 
 
+DEFENSE_INSTRUCTIONS = """You are a defensive security engineer. For each (technique, \
+mitigation) pair below, write a concrete defensive ACTION and a one-sentence RATIONALE for \
+why that MITRE ATT&CK mitigation counters the technique.
+
+HARD CONSTRAINTS:
+- Emit ONE entry per provided pair, reusing its EXACT technique_id and mitigation_id verbatim.
+- Do NOT invent, alter, or add any technique_id or mitigation_id — use only the pairs given.
+- Keep the action operational and specific; keep the rationale to one sentence.
+
+Grounded (technique, mitigation) pairs:
+{pairs}
+"""
+
+
+def _mitigations_by_technique(
+    attack_context: list[dict[str, Any]],
+) -> dict[str, list[dict[str, str]]]:
+    """Map technique_id -> its ATT&CK mitigations ({id, name}) from the retrieved context."""
+    out: dict[str, list[dict[str, str]]] = {}
+    for record in attack_context:
+        tid = record.get("id")
+        if not tid:
+            continue
+        mitigations = [
+            {"id": m.get("id", ""), "name": m.get("name", "")}
+            for m in (record.get("mitigations") or [])
+            if m.get("id")
+        ]
+        if mitigations:
+            out.setdefault(tid, []).extend(mitigations)
+    return out
+
+
+def _grounded_pairs(
+    mechanics: list[dict[str, Any]], attack_context: list[dict[str, Any]]
+) -> list[dict[str, str]]:
+    """Ordered (technique, mitigation) pairs grounded in the retrieved context.
+
+    Walks the extracted ``mechanics`` in kill-chain order and, for each technique, joins in
+    every mitigation the ``retrieve`` node surfaced for it. Mitigation ids therefore always
+    come from ``attack_context`` — never invented downstream.
+    """
+    mit_map = _mitigations_by_technique(attack_context)
+    pairs: list[dict[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for m in mechanics:
+        tid = m.get("technique_id", "")
+        tname = m.get("name", "")
+        for mit in mit_map.get(tid, []):
+            key = (tid, mit["id"])
+            if key in seen:
+                continue
+            seen.add(key)
+            pairs.append(
+                {
+                    "technique_id": tid,
+                    "technique_name": tname,
+                    "mitigation_id": mit["id"],
+                    "mitigation_name": mit["name"],
+                }
+            )
+    return pairs
+
+
+def _deterministic_defense(pairs: list[dict[str, str]]) -> list[dict[str, str]]:
+    """Offline fail-open synthesis — grounded templated action/rationale per pair."""
+    defenses: list[dict[str, str]] = []
+    for p in pairs:
+        mit_name = p.get("mitigation_name") or p["mitigation_id"]
+        tech_name = p.get("technique_name") or p["technique_id"]
+        defenses.append(
+            {
+                "technique_id": p["technique_id"],
+                "mitigation_id": p["mitigation_id"],
+                "action": f"Implement {mit_name} to counter {tech_name} ({p['technique_id']}).",
+                "rationale": (
+                    f"{mit_name} ({p['mitigation_id']}) is the MITRE ATT&CK mitigation mapped "
+                    f"to {p['technique_id']}."
+                ),
+            }
+        )
+    return defenses
+
+
+def _format_pairs(pairs: list[dict[str, str]]) -> str:
+    return "\n".join(
+        f"- {p['technique_id']} ({p['technique_name']}) -> "
+        f"{p['mitigation_id']} ({p['mitigation_name']})"
+        for p in pairs
+    )
+
+
+async def _synthesize_defense(
+    pairs: list[dict[str, str]], config: RunnableConfig
+) -> list[dict[str, str]]:
+    """Synthesize defense entries for the grounded pairs; fail open to deterministic text.
+
+    Uses a structured LLM call (tagged ``skip_stream`` so its tokens never reach the user) to
+    write the action/rationale prose, then hard-filters the result back to the allowed
+    (technique_id, mitigation_id) pairs so no mitigation id can be invented. Falls open to a
+    deterministic, grounded synthesis when the model is unavailable.
+    """
+    if not pairs:
+        return []
+    allowed = {(p["technique_id"], p["mitigation_id"]) for p in pairs}
+    try:
+        model = get_model(config["configurable"].get("model", settings.DEFAULT_MODEL))
+        structured = model.with_structured_output(DefenseConfig).with_config(
+            tags=["skip_stream"]
+        )
+        system = SystemMessage(content=DEFENSE_INSTRUCTIONS.format(pairs=_format_pairs(pairs)))
+        result = await structured.ainvoke([system], config)
+        defenses = result.defenses if isinstance(result, DefenseConfig) else []
+        grounded = [
+            d.model_dump()
+            for d in defenses
+            if (d.technique_id, d.mitigation_id) in allowed
+        ]
+        if grounded:
+            return grounded
+        logger.warning("LLM defense synthesis produced no grounded entries; using fallback.")
+    except Exception as exc:  # noqa: BLE001 — fail open to deterministic grounded synthesis
+        logger.warning("Defense synthesis LLM call failed (%s); using deterministic.", exc)
+    return _deterministic_defense(pairs)
+
+
 async def defensive_guardrail(
     state: ThreatGraphState, config: RunnableConfig
 ) -> ThreatGraphState:
-    """Terminal node — synthesize the defense config and emit the ``custom`` output message.
+    """Terminal node — synthesize a grounded defense config, Guardrails-validate it, emit output.
 
-    Phase 3 replaces the canned config with a Guardrails-AI-validated ``DefenseConfig``
-    grounded in the retrieved ATT&CK mitigations.
+    Synthesizes a ``DefenseConfig`` whose mitigation ids are grounded in the retrieved
+    ``attack_context`` (never invented), runs it through Guardrails AI
+    (:func:`agents.guardrails.validate_defense_config`, fail-open), and attaches the validated
+    config to the terminal ``custom`` ``ChatMessage`` payload. Fails open to the canned config
+    only if no grounded pairs are available at all.
     """
-    defense_config = CANNED_DEFENSE_CONFIG
+    mechanics = state.get("mechanics") or CANNED_MECHANICS
+    attack_context = state.get("attack_context") or CANNED_ATTACK_CONTEXT
+
+    pairs = _grounded_pairs(mechanics, attack_context)
+    synthesized = await _synthesize_defense(pairs, config)
+    if not synthesized:
+        logger.warning("No grounded defense pairs available; using canned defense config.")
+        synthesized = CANNED_DEFENSE_CONFIG
+
+    # Guardrails AI structural validation (fail-open) of the synthesized config.
+    validated = validate_defense_config(synthesized)
+    defense_config = [d.model_dump() for d in validated.defenses] or synthesized
+
     payload = {
-        "mechanics": state.get("mechanics", CANNED_MECHANICS),
+        "mechanics": mechanics,
         "mermaid": state.get("mermaid", CANNED_MERMAID),
         "defense_config": defense_config,
     }

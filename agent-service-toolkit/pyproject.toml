@@ -61,6 +61,8 @@ dependencies = [
     "rank-bm25>=0.2.2",  # sparse BM25 leg
     "langchain-classic>=1.0.8",  # EnsembleRetriever (weighted RRF), moved here in LangChain v1
     "sentence-transformers>=3.0",  # CrossEncoder reranker
+    # PF-001 Phase 3 — Guardrails AI structured-output (Pydantic) validation of the defense config
+    "guardrails-ai>=0.6",  # Guard.for_pydantic(DefenseConfig, on_fail=...); Hub token in ~/.guardrailsrc
 ]
 
 [dependency-groups]

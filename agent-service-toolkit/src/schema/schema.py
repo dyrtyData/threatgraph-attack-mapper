@@ -126,6 +126,46 @@ class ExtractedMechanics(BaseModel):
     )
 
 
+class Defense(BaseModel):
+    """A single defensive measure tied to one extracted technique.
+
+    Grounded in the retrieved ``attack_context``: the ``mitigation_id`` is a canonical
+    MITRE ATT&CK mitigation id that the ``retrieve`` node surfaced for the technique — it is
+    never invented by the model (Phase 3).
+    """
+
+    technique_id: str = Field(
+        description="Canonical MITRE ATT&CK technique id this defense addresses.",
+        examples=["T1566.001", "T1059.001", "T1486"],
+    )
+    mitigation_id: str = Field(
+        description="Canonical MITRE ATT&CK mitigation id (grounded in attack_context).",
+        examples=["M1017", "M1042", "M1053"],
+    )
+    action: str = Field(
+        description="Concrete defensive action to take.",
+        examples=["Deliver phishing-awareness training and simulated-phishing exercises."],
+    )
+    rationale: str = Field(
+        description="Why this mitigation counters the technique.",
+        examples=["User Training reduces the likelihood a spearphishing attachment is opened."],
+    )
+
+
+class DefenseConfig(BaseModel):
+    """Synthesized, Guardrails-AI-validated defense configuration (Phase 3).
+
+    Shared Pydantic type (lives here, not in ``threatgraph.py``) so the ``evals/`` harness
+    can import it in Phase 5. Each entry maps an extracted technique to a mitigation grounded
+    in the retrieved ATT&CK context, validated via ``Guard.for_pydantic(DefenseConfig)``.
+    """
+
+    defenses: list[Defense] = Field(
+        default_factory=list,
+        description="Defensive measures, one per (technique, grounded mitigation) pairing.",
+    )
+
+
 class ChatMessage(BaseModel):
     """Message in a chat."""
 

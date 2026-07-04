@@ -91,7 +91,7 @@ Filled in by later phases (dry-run deliverable — informs the live-run cut list
 | BM25 retriever build | **0.03 s** | Phase 2 — `BM25Retriever.from_documents` over 697 docs (in-memory, offline) |
 | RRF fusion (`EnsembleRetriever`) | **~1.2 s / query** | Phase 2 — fused query (BM25 top-10 ∪ dense top-10 → 15 candidates); retriever construction ~2.0 s (incl. dense leg open) |
 | Cross-encoder rerank | **~84 ms / query** | Phase 2 — `ms-marco-MiniLM-L6-v2`, 15 candidates, model cached. **First-run model download: ~27 s (~90 MB), one-time, opt-in `--run-integration`** |
-| Guardrails AI validation | _tbd_ | Phase 3 |
+| Guardrails AI validation | **~10.6 ms / call** | Phase 3 — `Guard.for_pydantic(DefenseConfig).parse(...)`, 3-entry config, local Pydantic structural validation (no Hub inference; `use_remote_inferencing=false`). One-time cold cost: `import guardrails` + `Guard.for_pydantic` build **~1.18 s** |
 | Mem0 recall/write round-trip | _tbd_ | Phase 4 |
 | Langfuse experiment run | _tbd_ | Phase 5 |
 | Streamlit UI build | ~20 min (Phase 1 skeleton) | Phase 1/3 — custom-message branch + Mermaid renderer w/ CDN fallback |
@@ -376,3 +376,119 @@ tagged `skip_stream`, long tool/retrieval chains, or an `ainvoke` that only retu
 message — produces a dead-looking UI with no feedback. Always pair such work with an explicit
 progress indicator (spinner / `st.status`) that is shown while awaiting and cleared on first render,
 so a slow-but-working agent is never mistaken for a frozen one.
+
+## 2026-07-04 — Phase 3: Defensive_Guardrail with Guardrails AI Pydantic validation
+
+Turned the canned defense stub into a real node: the `defensive_guardrail` now **synthesizes** a
+`DefenseConfig` grounded in the retrieved `attack_context` mitigations and validates it through
+Guardrails AI, then attaches the validated config to the terminal `custom` message. Fail-open
+end-to-end, matching the `Safeguard`/retrieval philosophy — the graph never hard-crashes on the
+guardrail step.
+
+### Built
+
+- **`src/schema/schema.py`** — added shared Pydantic types `Defense` (`technique_id`,
+  `mitigation_id`, `action`, `rationale`) and `DefenseConfig` (`defenses: list[Defense]`),
+  mirroring how `Technique`/`ExtractedMechanics` were added in Phase 2. Both exported from
+  `src/schema/__init__.py` so the Phase 5 `evals/` harness can import them.
+- **`src/agents/guardrails.py`** (new) — `validate_defense_config(raw)` wraps
+  `Guard.for_pydantic(DefenseConfig)` + `guard.parse(...)`. **Fail-open like `Safeguard`:** on any
+  failure (guardrails import error, Guard build error, validation not passing) it falls back to a
+  best-effort local parse (`_best_effort_parse`) that coerces the payload into a valid
+  `DefenseConfig`, keeping every entry with the grounded core (`technique_id` + `mitigation_id`)
+  and backfilling missing `action`/`rationale`. Accepts `str | dict | list | DefenseConfig`.
+- **`src/agents/threatgraph.py`** — `defensive_guardrail` rewrite. `_grounded_pairs` walks the
+  extracted `mechanics` in kill-chain order and joins each technique's mitigations **from
+  `attack_context`** (never invented); `_synthesize_defense` writes the action/rationale prose via
+  a structured LLM call tagged `skip_stream`, then **hard-filters** the result back to the allowed
+  `(technique_id, mitigation_id)` pairs, failing open to a deterministic grounded synthesis
+  (`_deterministic_defense`) when the model is unavailable. The synthesized config runs through
+  `validate_defense_config` before being attached to `custom_data`. `CANNED_DEFENSE_CONFIG` is
+  retained only as the last-resort fallback when no grounded pairs exist at all.
+- **`pyproject.toml`** — added `guardrails-ai>=0.6` (resolved to **0.10.2**).
+- **`tests/agents/test_defense_guardrail.py`** (new, 9 tests) — valid config passes; malformed
+  output exercises the fix/fail-open path (missing fields backfilled, ungrounded entries dropped);
+  garbage string fails open to an empty-but-valid config; bare-list/model inputs round-trip;
+  `_grounded_pairs` only emits context-grounded pairs and ignores ungrounded techniques; the node
+  synthesizes a validated, context-grounded config offline.
+- **`tests/agents/test_threatgraph.py`** — extended the benign end-to-end assertion for the
+  now-real defense_config shape (technique/mitigation/action/rationale) with mitigation ids
+  grounded in the retrieved `attack_context`.
+
+### Guardrails AI: local validation, no Hub needed
+
+- The token / config already live in `~/.guardrailsrc` (`use_remote_inferencing=false`), so
+  **validation runs entirely locally** — `Guard.for_pydantic(DefenseConfig)` enforces the Pydantic
+  JSON structure in-process; there is **no Hub/network call** on the default path. This was
+  confirmed at runtime (guardrails logs "Falling back to synchronous validation").
+- **No `guardrails hub install` step was required** for this phase: `DefenseConfig` uses plain typed
+  fields (no `guardrails.hub` validators like `DetectPII`/`ToxicLanguage`), so nothing needs to be
+  fetched from the Hub. **If a future phase adds a Hub validator**, run (out-of-band, not committed):
+  `guardrails hub install hub://guardrails/<validator>` — the token in `~/.guardrailsrc` authorizes
+  it. The `~/.guardrailsrc` file is git-ignored and never enters history.
+- **On `on_fail`:** `Guard.for_pydantic` takes no `on_fail` kwarg (that is a per-*validator*
+  action). The outline's `on_fail=reask/fix` intent is realized as: structural validation via the
+  Pydantic schema itself, `fix` semantics applied as the local best-effort coercion, and `reask`
+  deliberately **not** wired to an `llm_api` (a network call) so the default node path stays
+  offline/fast and fail-open.
+
+### API note (deviation surfaced at implementation time)
+
+The outline's signature sketch `Guard.for_pydantic(DefenseConfig, on_fail=reask/fix)` does not match
+the installed guardrails-ai 0.10.2 API (`for_pydantic` has no `on_fail` param). Resolved as above —
+the structure outline's *intent* (Guardrails-AI Pydantic validation, fail-open) is fully satisfied;
+only the literal kwarg placement differs.
+
+### Verification
+
+- `uv run pytest tests/agents/test_defense_guardrail.py -q` → **9 passed**;
+  `tests/agents/test_defense_guardrail.py tests/agents/test_threatgraph.py` → **15 passed**.
+- Full suite `uv run pytest -q` → **148 passed, 3 skipped** (was 148/3 baseline entering the phase;
+  the 3 skips are the opt-in `--run-integration` reranker-download test + 2 docker tests).
+  `ruff check` clean on all changed files.
+- **End-to-end (offline graph run):** the compiled `threatgraph` emits a terminal `custom` message
+  whose `custom_data.defense_config` is a 3-entry, schema-valid `DefenseConfig`
+  (`T1566.001→M1017`, `T1059.001→M1042`, `T1486→M1053`) with **every mitigation id grounded in the
+  retrieved `attack_context`** — verified programmatically.
+- Per-component timing (Guardrails validation ~10.6 ms/call warm; ~1.18 s cold import+build)
+  recorded in the timing table above.
+
+### Manual verification still pending (for the human)
+
+- Streamlit: submit a real threat-intel snippet and confirm the defense-config table shows `Mxxxx`
+  mitigations tied to the extracted `Txxxx` techniques (run the service with `MODE=dev` so it
+  picks up the new node code; use `PORT=8081`/`AGENT_URL` per the Phase 1 note to avoid the `:8080`
+  conflict).
+
+---
+
+## 2026-07-04 — DQ6 fix: CDN `components.html` + `mermaid@11` is now the PRIMARY Mermaid renderer
+
+**Bug (confirmed in browser):** the attack graph failed to render with *"Your app is having
+trouble loading the streamlit_mermaid.streamlit_mermaid component."* The prior `render_mermaid()`
+used `streamlit-mermaid` (`st_mermaid`) as the **primary** renderer and only fell back to the
+CDN `components.html` path on a **Python** exception. But `streamlit-mermaid` fails
+**asynchronously in the browser** (its component frontend assets don't load), which raises **no
+Python exception** — so the exception-based fallback never fired and the user saw a broken
+component box.
+
+**Fix (`src/streamlit_app.py`):**
+- `render_mermaid()` now renders **only** via `st.components.v1.html(...)` — a self-contained
+  inline HTML doc that imports `mermaid@11` (ESM) from jsdelivr, calls
+  `mermaid.initialize({startOnLoad:false})`, then `mermaid.run({nodes})`.
+- Diagram source is embedded in a `<pre class="mermaid">` block, **HTML-escaped** (`html.escape`),
+  so backticks/quotes/newlines can't break the render (avoids JS string-escaping pitfalls).
+- Unique **CSS-safe** container id per render (`"mermaid-" + uuid4().hex`, **no colons**) prevents
+  collisions across Streamlit reruns.
+- Explicit `height=500` + `scrolling=True` (the sandboxed iframe does not auto-resize).
+- Dropped the `streamlit_mermaid` import/usage from the renderer. **The `streamlit-mermaid`
+  dependency stays in `pyproject.toml`** (still installed) — it is simply no longer relied upon.
+
+**Verify:** `uv run pytest tests/app -q` → **11 passed**; `ruff check src/streamlit_app.py` clean.
+Generated HTML sanity-checked well-formed (parses; id has no colon; a `graph TD\n A-->B` source
+embeds correctly in the `<pre>`).
+
+**General lesson (future projects):** for Streamlit custom-component rendering, prefer a
+self-contained CDN / `components.html` approach over third-party components whose frontend assets
+can silently fail — and **never rely on Python `try/except` to catch browser-side component
+failures**, because they raise no Python exception on the server.

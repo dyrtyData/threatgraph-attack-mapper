@@ -109,6 +109,17 @@ async def test_threatgraph_benign_populates_output(monkeypatch):
     ids = [m["technique_id"] for m in result["mechanics"]]
     assert ids == ["T1566.001", "T1059.001", "T1486"]
 
+    # Phase 3: the defense config is the now-real synthesized shape (technique/mitigation/
+    # action/rationale) with mitigation ids grounded in the retrieved attack_context.
+    context_mitigation_ids = {
+        m["id"] for c in SEED_CONTEXT for m in (c.get("mitigations") or [])
+    }
+    context_technique_ids = {c["id"] for c in SEED_CONTEXT}
+    for entry in result["defense_config"]:
+        assert {"technique_id", "mitigation_id", "action", "rationale"} <= set(entry)
+        assert entry["mitigation_id"] in context_mitigation_ids  # grounded, not invented
+        assert entry["technique_id"] in context_technique_ids
+
     # The terminal message is a `custom` LangChain ChatMessage carrying the payload.
     last = result["messages"][-1]
     assert isinstance(last, LangchainChatMessage)
