@@ -57,6 +57,10 @@ dependencies = [
     "uvicorn ~=0.49.0",
     "langchain-mcp-adapters>=0.3.0",
     "ddgs>=9.14.4",
+    # PF-001 Phase 2 — hybrid ATT&CK retrieval (BM25 + dense RRF fusion + cross-encoder rerank)
+    "rank-bm25>=0.2.2",  # sparse BM25 leg
+    "langchain-classic>=1.0.8",  # EnsembleRetriever (weighted RRF), moved here in LangChain v1
+    "sentence-transformers>=3.0",  # CrossEncoder reranker
 ]
 
 [dependency-groups]

@@ -88,6 +88,44 @@ class ToolCall(TypedDict):
     type: NotRequired[Literal["tool_call"]]
 
 
+class Technique(BaseModel):
+    """A single attacker technique extracted from threat-intel text.
+
+    Canonicalized to a MITRE ATT&CK ``Txxxx[.yyy]`` id grounded in the retrieved
+    ``attack_context`` (Phase 2, shared by ``threatgraph`` and the ``evals/`` harness).
+    """
+
+    tactic: str = Field(
+        description="ATT&CK tactic (kill-chain phase) this technique serves.",
+        examples=["Initial Access", "Execution", "Impact"],
+    )
+    technique_id: str = Field(
+        description="Canonical MITRE ATT&CK technique id.",
+        examples=["T1566.001", "T1059.001", "T1486"],
+    )
+    name: str = Field(
+        description="Human-readable technique name.",
+        examples=["Spearphishing Attachment", "PowerShell"],
+    )
+    evidence: str = Field(
+        description="Span of the source text that supports this technique.",
+        examples=["A macro-enabled document was delivered by email to the victim."],
+    )
+
+
+class ExtractedMechanics(BaseModel):
+    """Ordered attacker execution mechanics extracted by the ``Extractor`` node.
+
+    Shared Pydantic type (lives here, not in ``threatgraph.py``) so the ``evals/`` harness
+    can import it in Phase 5. Techniques are ordered along the kill chain.
+    """
+
+    techniques: list[Technique] = Field(
+        default_factory=list,
+        description="Ordered list of attacker techniques along the kill chain.",
+    )
+
+
 class ChatMessage(BaseModel):
     """Message in a chat."""
 

@@ -4,10 +4,12 @@ from schema.schema import (
     ChatHistory,
     ChatHistoryInput,
     ChatMessage,
+    ExtractedMechanics,
     Feedback,
     FeedbackResponse,
     ServiceMetadata,
     StreamInput,
+    Technique,
     UserInput,
 )
 
@@ -16,10 +18,12 @@ __all__ = [
     "AllModelEnum",
     "UserInput",
     "ChatMessage",
+    "ExtractedMechanics",
     "ServiceMetadata",
     "StreamInput",
     "Feedback",
     "FeedbackResponse",
     "ChatHistoryInput",
     "ChatHistory",
+    "Technique",
 ]

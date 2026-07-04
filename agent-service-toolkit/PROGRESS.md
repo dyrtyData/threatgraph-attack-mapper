@@ -86,11 +86,11 @@ Filled in by later phases (dry-run deliverable — informs the live-run cut list
 
 | Component | Wall-clock | Notes |
 | --- | --- | --- |
-| ATT&CK corpus fetch (`fetch_attack_corpus.py`) | _tbd_ | Phase 2 — full ~650+ record fetch |
-| Chroma index build (`index_attack_corpus.py`) | _tbd_ | Phase 2 — OpenAI embeddings + persist |
-| BM25 retriever build | _tbd_ | Phase 2 |
-| RRF fusion (`EnsembleRetriever`) | _tbd_ | Phase 2 |
-| Cross-encoder rerank | _tbd_ | Phase 2 — model download cost noted separately |
+| ATT&CK corpus fetch (`fetch_attack_corpus.py`) | **5.5 s** | Phase 2 — full fetch → **697 records** (STIX download + distill; raw bundle then cached) |
+| Chroma index build (`index_attack_corpus.py`) | **10.2 s** | Phase 2 — 697 records, OpenAI embeddings + persist to `attack` collection (15.4 s incl. import) |
+| BM25 retriever build | **0.03 s** | Phase 2 — `BM25Retriever.from_documents` over 697 docs (in-memory, offline) |
+| RRF fusion (`EnsembleRetriever`) | **~1.2 s / query** | Phase 2 — fused query (BM25 top-10 ∪ dense top-10 → 15 candidates); retriever construction ~2.0 s (incl. dense leg open) |
+| Cross-encoder rerank | **~84 ms / query** | Phase 2 — `ms-marco-MiniLM-L6-v2`, 15 candidates, model cached. **First-run model download: ~27 s (~90 MB), one-time, opt-in `--run-integration`** |
 | Guardrails AI validation | _tbd_ | Phase 3 |
 | Mem0 recall/write round-trip | _tbd_ | Phase 4 |
 | Langfuse experiment run | _tbd_ | Phase 5 |
@@ -167,6 +167,16 @@ forking off `main` doesn't rediscover them:
    Fix: run the agent service on a free port and point the client at it —
    `PORT=8081 uv run python src/run_service.py` and
    `AGENT_URL=http://localhost:8081 uv run streamlit run src/streamlit_app.py`.
+3. **The FastAPI service does NOT auto-reload by default; Streamlit does.** Editing agent
+   code (e.g. `threatgraph.py`) has no effect on an already-running service unless it was
+   started in dev mode — symptom: the UI keeps showing the *previous* phase's output. Start
+   the service with `MODE=dev` so `reload=settings.is_dev()` (`run_service.py`) is `True` and
+   uvicorn watches `src/` and restarts on edits:
+   `MODE=dev PORT=8081 uv run python src/run_service.py`. Streamlit reruns its own script on
+   change automatically, but it talks to the service over HTTP, so a stale service still
+   serves stale results. (This bit us verifying Phase 2 — the service kept running the Phase 1
+   canned agent until restarted; once restarted in dev mode a non-seed snippet correctly
+   extracted `T1003.001` (LSASS), which is absent from the canned chain — proving the real path.)
 
 ### Git housekeeping: `main` promoted to the clean shared base
 
@@ -181,3 +191,161 @@ full `agent-service-toolkit` + ATT&CK tooling but **no PF-001 domain code**. Net
 This was a pure pointer fast-forward (no history rewrite; reversible via `git branch -f main a502620`).
 The main worktree's pre-existing untracked base copies were tucked into a `git stash -u` safety net
 first (git-ignored `.venv`/corpus excluded); the local-only `CLAUDE.md` was preserved out-of-band.
+
+---
+
+## 2026-07-04 — Phase 2: Grounded Extractor + Graph_Architect over full ATT&CK hybrid retrieval
+
+Replaced the `retrieve`/`extractor`/`graph_architect` stubs with real logic backed by a shared
+hybrid-retrieval node over the **full 697-record** MITRE ATT&CK corpus. The retriever is isolated
+in one module so a dense-only fallback is a one-line swap for the timed live run.
+
+### Built
+
+- **`scripts/fetch_attack_corpus.py`** (ran) — full fetch → `data/attack/attack_corpus.jsonl`,
+  **697 techniques** (≥650 target), 5.5 s.
+- **`scripts/index_attack_corpus.py`** (new) — reads the JSONL, shapes `Document`s (name + tactics
+  + description + mitigations), embeds with `OpenAIEmbeddings`, persists to a dedicated `attack`
+  collection in `agent-service-toolkit/chroma_db`. Reuses the exact doc-shaping + explicit path
+  resolution from `retrieval.py` so the dense + BM25 legs index identical text. 697 records, 10.2 s.
+- **`src/agents/retrieval.py`** (new) — `build_attack_retriever()` (BM25 + Chroma dense fused via
+  `EnsembleRetriever` weighted RRF `[0.5,0.5]`, then `CrossEncoder` rerank) and
+  `retrieve_attack_context(query, k)`. **Fails open** to a BM25-only offline path (then to canned
+  context) when the dense leg / OpenAI key is unavailable — mirrors the `Safeguard` idiom. Each leg
+  is constructable in isolation for testing.
+- **`src/schema/schema.py`** (edit) — added shared `Technique` + `ExtractedMechanics` Pydantic types
+  (re-exported from `schema/__init__.py`) so the Phase 5 `evals/` harness can import them.
+- **`src/agents/threatgraph.py`** (edit) — real `retrieve` node → `attack_context`; `extractor` uses
+  `.with_structured_output(ExtractedMechanics)` grounded in `attack_context`, **canonicalizing** to
+  the `Txxxx` ids present in the retrieved context (drops hallucinated ids), with a deterministic
+  context-derived fallback; `graph_architect` renders a kill-chain Mermaid string from mechanics and
+  runs a **structural parse-check** (`is_valid_mermaid` — leading `graph`/`flowchart`, ≥1 declared
+  node, edges reference declared nodes) with a canned fallback. Internal LLM calls carry
+  `.with_config(tags=["skip_stream"])`.
+- **`pyproject.toml`** (edit) — added `rank-bm25`, `langchain-classic` (EnsembleRetriever, moved here
+  in LangChain v1), `sentence-transformers`.
+- **`.gitignore`** (edit) — ignore `agent-service-toolkit/chroma_db/` (binary index; the distilled
+  JSONL corpus stays tracked, raw STIX bundle stays ignored).
+- **Tests** — `tests/agents/test_retrieval.py` (offline vs the 14-record **seed** corpus: BM25
+  "spearphishing attachment macro" → T1566.001 in top-k; RRF union of two legs; ensemble wiring;
+  the CrossEncoder-download rerank test marked opt-in `integration`), `tests/agents/test_threatgraph.py`
+  (edited for the new shapes: benign full-graph path with stubbed retrieval + forced fallback;
+  structured-extractor canonicalization via a fake structured model; context fallback; Mermaid
+  render + structural validity). Added a `--run-integration` marker in `tests/conftest.py` mirroring
+  `--run-docker` so default `pytest` stays fast + offline.
+
+### Open-question resolutions (per the outline)
+
+- **Corpus/Chroma paths** — resolved **explicitly** off `retrieval.py`'s location (`_AST_ROOT` /
+  `_REPO_ROOT`), not CWD, so BM25 (repo-root `data/attack/…jsonl`) and Chroma
+  (`agent-service-toolkit/chroma_db`, collection `attack`) read the same files regardless of launch
+  dir. The index script imports the same constants.
+- **Shared types** — `ExtractedMechanics`/`Technique` live in `src/schema/schema.py` (importable by
+  `evals/`), as the outline specified.
+- **Reranker in CI** — the CrossEncoder-download test is opt-in `integration` (skipped by default),
+  keeping `uv run pytest` fast + offline.
+
+### Verification
+
+- `uv run python scripts/fetch_attack_corpus.py` → **697** records (`wc -l` ≥ 650 ✅).
+- `uv run python scripts/index_attack_corpus.py` → `chroma_db` with the `attack` collection
+  (`count() == 697`) ✅.
+- `uv run pytest tests/agents/test_retrieval.py tests/agents/test_threatgraph.py -q` → **11 passed,
+  1 skipped** (the opt-in reranker) ✅. Full suite `uv run pytest -q` → **140 passed, 3 skipped**
+  (was 131/2 at Phase 1). `ruff check` clean on all changed files.
+- End-to-end hybrid query (`spearphishing … powershell … ransomware`) fused top ids include
+  T1566.001 + T1486; opt-in `--run-integration` rerank promotes T1566.001 to the top.
+- Manual Streamlit kill-chain render + per-stage timings: timing table filled above; Streamlit
+  visual confirmation pending (human manual-verification step).
+
+---
+
+## 2026-07-04 — Phase 2 tuning pass: fix multi-technique under-extraction
+
+Phase 2 was functionally complete (real hybrid-RAG + structured extraction proven end-to-end),
+but the extractor **under-extracted**: on a multi-technique incident snippet it returned only
+1–2 techniques instead of the ~4 present.
+
+### Root cause (found by instrumenting each retrieval leg)
+
+Two compounding causes, both on the *retrieval* side (the extractor was correctly grounding
+only what it was given):
+
+1. **Single-query retrieval over the whole snippet + narrow `k=5`.** One query for the entire
+   incident surfaces mostly the neighbors of the *single most salient* phrase, so the grounding
+   set is starved of the other techniques.
+2. **The cross-encoder rerank collapses diversity — this was the real killer.** The BM25 + dense
+   RRF **fusion** actually produced a *diverse* candidate set (for the test snippet the fused top
+   candidates included `T1021.001` RDP and `T1567.002` cloud-exfil alongside the credential-dump
+   techniques). But a single-query cross-encoder rerank over the *whole* fused set scores every doc
+   against the full incident text, and the densest phrase ("dump credentials from LSASS memory")
+   dominates — so the reranked top-k was **entirely** credential-access variants
+   (`T1003.*`/`T1110.*`/`T1550.*`), evicting the lateral-movement and exfil techniques.
+   Because the extractor grounds only what's retrieved, those techniques were then impossible to
+   extract. Raising `k` alone does **not** fix this — the rerank just fills every slot with the
+   same cluster.
+
+### Fix (k + enumerate-then-ground + rerank-as-reorder-only)
+
+- **`retrieval.py` — RRF fusion is now the diversity/recall mechanism; the cross-encoder only
+  *reorders*.** `build_attack_retriever._retrieve` now takes the RRF-diverse fused **top-k as the
+  grounding membership**, then reranks only that window (`rerank_documents(query, fused[:k], k=k)`)
+  instead of reranking the whole fused set down to one collapsed cluster. Also broadened the
+  per-leg fan-out `CANDIDATE_K` 10 → 20 and added `CONTEXT_K = 15` (the wide grounding window used
+  by the graph's `retrieve` node; the library `DEFAULT_K = 5` is unchanged). The BM25-only /
+  dense-only fail-open ladder is untouched.
+- **`threatgraph.py` — `retrieve` node uses `CONTEXT_K` (15), not the narrow `DEFAULT_K` (5).**
+- **`threatgraph.py` — extractor prompt rewritten to *enumerate-then-ground*.** STEP 1: list EVERY
+  distinct attacker behavior (incidents span multiple tactics — don't stop at the dominant one);
+  STEP 2: ground each enumerated behavior to the single best-matching retrieved ATT&CK id, one
+  entry per behavior. Still `.with_structured_output(ExtractedMechanics)`, still canonicalizes to
+  the `Txxxx` ids present in context and drops hallucinated ids — but the widened, diversity-
+  preserving grounding set means real techniques now survive.
+
+### Before / after (test snippet, real OpenAI key)
+
+Snippet: *"The intruder logged in with stolen VPN credentials, ran Mimikatz to dump credentials
+from LSASS memory, then pivoted to other hosts over RDP and exfiltrated archives to a cloud
+storage bucket over HTTPS."*
+
+- **Before** (k=5, describe-dominant prompt): `['T1110.004', 'T1003.001']` — 2 techniques, both
+  Credential Access (the collapsed cluster); no lateral movement, no exfil.
+- **After** (k=15, RRF-diverse membership + enumerate-then-ground): `['T1003.001', 'T1021.001',
+  'T1567.002']` — 3 techniques spanning **Credential Access → Lateral Movement → Exfiltration**
+  (LSASS Memory, Remote Desktop Protocol, Exfiltration to Cloud Storage), correctly grounded, no
+  hallucinations. Confirmed via both the `extractor` node directly and full `threatgraph.ainvoke`.
+- The 4th expected technique (`T1078` Valid Accounts, for the VPN login) does **not** surface: the
+  correct base id is under-retrieved (only `T1078.004` "Cloud Accounts" appears at k≥18, which the
+  model correctly declines as a poor match for a VPN login). Genuine single-query-retrieval recall
+  limit for weakly-lexical initial-access techniques — see lesson below. 3-of-4 with a clean
+  kill-chain spread and zero hallucination is the accepted result for this pass.
+
+### General lesson (for future runs)
+
+**Single-query retrieval + a single-query cross-encoder rerank + ground-only-what's-retrieved is a
+recipe for multi-technique under-extraction.** A cross-encoder rerank optimizes precision for a
+*single-intent* query; feeding it a whole multi-technique incident makes it collapse to the one
+densest phrase and evict every other technique. For multi-intent grounding: (1) let RRF **fusion**
+own diversity/recall and use the cross-encoder only to *reorder* a diverse window (not to filter
+the fused set down); (2) widen `k` (~15); (3) prompt the extractor to **enumerate all behaviors
+first, then ground each** rather than describe the dominant one. The remaining recall gap for
+weakly-lexical techniques (e.g. `T1078` from "VPN login") is the next lever if needed:
+**multi-query / per-behavior retrieval** (decompose the snippet, retrieve per behavior, union) —
+deferred as it wasn't required to clear this pass.
+
+### Verification
+
+- `uv run pytest -q` → **140 passed, 3 skipped** (unchanged; extraction *shape* unchanged, so no
+  test edits were needed — the offline benign/fallback and fake-structured-model tests still pass).
+  `ruff check` clean on both changed files.
+- Real-key in-process runs (both the `extractor` node and full `threatgraph.ainvoke`) produce the
+  after ids above; Mermaid renders `graph TD` and passes the structural check.
+- **Chroma index NOT rebuilt** — only retrieval *ranking* logic changed (k values + rerank-as-
+  reorder); the corpus, document shaping, and embeddings are identical, and the dense leg simply
+  requests more results from the existing 697-record `attack` collection. Timing table unchanged.
+
+### Files changed
+
+- `src/agents/retrieval.py` — `CANDIDATE_K` 10→20, new `CONTEXT_K=15`, `_retrieve` reranks the
+  RRF-diverse top-k (reorder) instead of collapsing the whole fused set.
+- `src/agents/threatgraph.py` — `retrieve` node uses `CONTEXT_K`; extractor prompt enumerate-then-ground.
