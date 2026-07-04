@@ -1,0 +1,16 @@
+.env
+.DS_Store
+
+coms/
+agent-service-toolkit/
+alex/
+books/
+cyber/
+Guardrails/
+mem0/
+open-webui/
+production/
+ragflow/
+skills/
+deepeval/
+guardrails/
