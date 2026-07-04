@@ -7,6 +7,22 @@ from langchain_core.messages import AIMessage
 from service import app
 
 
+@pytest.fixture(autouse=True)
+def neutralize_ambient_auth_secret(monkeypatch):
+    """Neutralize any ambient AUTH_SECRET for the service tests.
+
+    When this toolkit is absorbed into the parent repo, `core.settings` resolves
+    its env file via `find_dotenv()`, which walks up past the toolkit (no local
+    `.env`) to the repo-root `.env`. That real `AUTH_SECRET` would enable FastAPI
+    bearer auth and 401 the unauthenticated tests here that exercise the mocked
+    agent through the real `test_client`. We null it at import scope for these
+    tests only — source and the root `.env` are left untouched so authenticated
+    runs still work. Auth-specific tests use the `mock_settings` fixture, which
+    replaces `service.service.settings` wholesale and is therefore unaffected.
+    """
+    monkeypatch.setattr("service.service.settings.AUTH_SECRET", None)
+
+
 @pytest.fixture
 def test_client():
     """Fixture to create a FastAPI test client."""
