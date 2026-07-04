@@ -1,4 +1,5 @@
 import asyncio
+import html as html_module
 import os
 import urllib.parse
 import uuid
@@ -14,12 +15,10 @@ from schema import ChatHistory, ChatMessage
 from schema.task_data import TaskData, TaskDataStatus
 from voice import VoiceManager
 
-# Primary Mermaid renderer (DQ6). Guarded so the app still runs (via the CDN fallback
-# below) when the optional `streamlit-mermaid` package is not installed.
-try:
-    import streamlit_mermaid as stmd
-except ImportError:  # pragma: no cover - exercised only when the package is absent
-    stmd = None
+# Mermaid attack graphs (DQ6) render via a self-contained CDN `components.html` iframe
+# (see `render_mermaid`). The `streamlit-mermaid` package is intentionally NOT used as
+# the renderer: its component frontend can silently fail to load in the browser without
+# raising a Python exception, so an exception-based fallback never triggers.
 
 # A Streamlit app for interacting with the langgraph agent via a simple chat interface.
 # The app has three main functions which are all run async:
@@ -315,30 +314,32 @@ async def main() -> None:
             await handle_feedback()
 
 
-def render_mermaid(code: str, height: int = 520) -> None:
-    """Render a Mermaid diagram.
+def render_mermaid(code: str, height: int = 500) -> None:
+    """Render a Mermaid diagram (DQ6).
 
-    Primary path uses the `streamlit-mermaid` package (DQ6). If it is unavailable or
-    errors, fall back to a sandboxed `components.html` iframe loading `mermaid@11` from a
-    CDN (explicit height + scrolling, since the sandboxed iframe does not auto-resize).
+    Uses a self-contained ``components.html`` iframe that loads ``mermaid@11`` (ESM)
+    from a CDN as the primary and only reliably-needed renderer. This avoids the
+    ``streamlit-mermaid`` custom component, whose frontend assets can fail to load in
+    the browser without raising any Python exception (so a Python-level try/except
+    fallback never fires and the user sees a broken component box).
+
+    The diagram source is embedded inside a ``<pre class="mermaid">`` block (HTML-escaped)
+    and rendered via ``mermaid.run()``. This side-steps JS string-escaping pitfalls with
+    backticks/quotes/newlines. A unique, CSS-safe element id (derived from a uuid, no
+    colons) prevents collisions across Streamlit reruns. The iframe gets an explicit
+    ``height`` and ``scrolling=True`` since a sandboxed iframe does not auto-resize.
     """
-    if stmd is not None:
-        try:
-            stmd.st_mermaid(code, height=f"{height}px")
-            return
-        except Exception:  # noqa: BLE001 - fall back to the CDN renderer on any failure
-            pass
-
-    escaped = code.replace("`", "\\`")
+    container_id = "mermaid-" + uuid.uuid4().hex
+    safe_code = html_module.escape(code)
     html = f"""
-    <div class="mermaid">{code}</div>
+    <div id="{container_id}">
+      <pre class="mermaid">{safe_code}</pre>
+    </div>
     <script type="module">
       import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs";
       mermaid.initialize({{ startOnLoad: false }});
-      const code = `{escaped}`;
-      const el = document.querySelector(".mermaid");
-      const {{ svg }} = await mermaid.render("threatgraph-diagram", code);
-      el.innerHTML = svg;
+      const nodes = document.querySelectorAll("#{container_id} .mermaid");
+      await mermaid.run({{ nodes }});
     </script>
     """
     components.html(html, height=height, scrolling=True)
