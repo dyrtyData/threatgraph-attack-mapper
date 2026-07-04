@@ -349,3 +349,30 @@ deferred as it wasn't required to clear this pass.
 - `src/agents/retrieval.py` — `CANDIDATE_K` 10→20, new `CONTEXT_K=15`, `_retrieve` reranks the
   RRF-diverse top-k (reorder) instead of collapsing the whole fused set.
 - `src/agents/threatgraph.py` — `retrieve` node uses `CONTEXT_K`; extractor prompt enumerate-then-ground.
+
+## 2026-07-04 — Streamlit UX: progress indicator
+
+**Root cause.** The `threatgraph` agent tags its internal LLM/retrieval calls with `skip_stream`,
+so no tokens stream to the client — nothing renders in Streamlit until the terminal `custom`
+message (Mermaid attack graph + defense config) arrives several seconds later. With no progress
+indicator, the app looked frozen/broken for the entire wait.
+
+**Fix (`src/streamlit_app.py`, Streamlit-only).** Added a visible "running" indicator around the
+response consume, covering both toggle paths:
+- **Streaming (`astream`) path:** `draw_messages` now shows an `st.status(..., state="running")`
+  in an `st.empty()` placeholder (only when `is_new`) before awaiting the first chunk, and clears
+  it the instant the first token/message renders. For `threatgraph` (skip_stream) it stays up
+  during the wait, then clears when the terminal `custom` message lands. For token-streaming
+  agents (research-assistant, etc.) it disappears the moment tokens start — so they are unaffected.
+- **Non-streaming (`ainvoke`) path:** wrapped the `await agent_client.ainvoke(...)` in
+  `with st.spinner("Analyzing threat intel & building attack graph…")`, which clears before the
+  response renders.
+
+No agent/service code touched. `uv run pytest tests/app -q` → **11 passed** (no test edits needed;
+the indicator lives at the top level, not inside the chat-message containers the tests assert on).
+
+**General lesson (for future projects).** Any agent that does non-streamed internal work — anything
+tagged `skip_stream`, long tool/retrieval chains, or an `ainvoke` that only returns a terminal
+message — produces a dead-looking UI with no feedback. Always pair such work with an explicit
+progress indicator (spinner / `st.status`) that is shown while awaiting and cleared on first render,
+so a slow-but-working agent is never mistaken for a frozen one.

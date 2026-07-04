@@ -287,12 +287,16 @@ async def main() -> None:
                             audio_only=True,
                         )
             else:
-                response = await agent_client.ainvoke(
-                    message=user_input,
-                    model=model,
-                    thread_id=st.session_state.thread_id,
-                    user_id=user_id,
-                )
+                # Non-streaming: the whole response (including any skip_stream internal
+                # LLM/retrieval work, e.g. threatgraph) is awaited before anything can
+                # render, so show a spinner meanwhile to avoid a frozen-looking UI.
+                with st.spinner("Analyzing threat intel & building attack graph…"):
+                    response = await agent_client.ainvoke(
+                        message=user_input,
+                        model=model,
+                        thread_id=st.session_state.thread_id,
+                        user_id=user_id,
+                    )
                 messages.append(response)
                 # Render AI response with optional voice
                 with st.chat_message("ai"):
@@ -395,8 +399,24 @@ async def draw_messages(
     streaming_content = ""
     streaming_placeholder = None
 
+    # Show a "running" indicator while we await the agent's first output. Some agents
+    # (e.g. threatgraph) tag their internal LLM/retrieval calls with `skip_stream`, so
+    # nothing renders until the terminal `custom` message arrives several seconds later —
+    # without this the UI looks frozen. It is cleared the moment the first message/token
+    # renders, so token-streaming agents (research-assistant, etc.) are unaffected: the
+    # indicator simply disappears once tokens start.
+    running_indicator = st.empty() if is_new else None
+    if running_indicator is not None:
+        running_indicator.status(
+            "Analyzing threat intel & building attack graph…", state="running"
+        )
+
     # Iterate over the messages and draw them
     while msg := await anext(messages_agen, None):
+        # Clear the running indicator as soon as the first output is ready to render.
+        if running_indicator is not None:
+            running_indicator.empty()
+            running_indicator = None
         # str message represents an intermediate token being streamed
         if isinstance(msg, str):
             # If placeholder is empty, this is the first token of a new message
@@ -533,6 +553,10 @@ async def draw_messages(
                 st.error(f"Unexpected ChatMessage type: {msg.type}")
                 st.write(msg)
                 st.stop()
+
+    # Safety net: clear the indicator if the stream produced no drawable output.
+    if running_indicator is not None:
+        running_indicator.empty()
 
 
 async def handle_feedback() -> None:
