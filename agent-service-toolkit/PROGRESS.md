@@ -191,6 +191,21 @@ forking off `main` doesn't rediscover them:
      (`curl -u pk:sk https://us.cloud.langfuse.com/api/public/traces`) — verified. There is **no
      official Langfuse CLI**; project/evaluator setup is UI-only (or org-scoped API). Programmatic
      read/write of traces/scores/datasets is via the REST API or the `langfuse` Python SDK.
+5. **Browser client needs CORS + a client-auth strategy that server-side clients hide; and
+   `AUTH_SECRET=` does NOT turn auth off.** The React client (Vite `:5173` → service `:8081`)
+   first failed with "Failed to fetch" — the service had no CORS, so the cross-origin preflight
+   returned 405 with no `Access-Control-Allow-Origin` and the browser blocked it (Streamlit was
+   unaffected — it calls server-side). After adding `CORSMiddleware` (configurable
+   `CORS_ALLOW_ORIGINS`), it returned **401**: the repo-root `.env` sets `AUTH_SECRET` (bearer auth
+   ON) and a browser can't read your `.env` to send the token, whereas Streamlit's Python client
+   auto-attaches it. Critical gotcha: `AUTH_SECRET=` (empty) does **not** disable auth —
+   `Settings(env_ignore_empty=True)` ignores the empty override and falls back to `.env` (verified:
+   `settings.AUTH_SECRET` → STILL ENABLED). Fix chosen: give the browser the token via a
+   **git-ignored `frontend/.env`** (`VITE_AGENT_TOKEN=<AUTH_SECRET>`) and keep auth ON; restart Vite
+   to load it. Security caveat: `VITE_*` vars are compiled into the browser bundle, so an embedded
+   bearer token is a **local-dev shortcut only** — production uses a real user-auth flow, not a
+   shared client secret. General lesson: the first browser-origin caller exposes two gaps a
+   server-side client hides — **CORS** and **client-side auth**.
 
 ### Git housekeeping: `main` promoted to the clean shared base
 

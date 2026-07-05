@@ -206,17 +206,22 @@ FastAPI `POST /threatgraph/stream` SSE endpoint (via `fetch` +
 validated defense configuration.
 
 1. Start the FastAPI server (the client's default backend is `http://localhost:8081`).
-   For the smoothest local browser demo, start it with auth **disabled** so no
-   token is needed (the repo-root `.env` otherwise sets `AUTH_SECRET`, which turns
-   bearer auth on):
 
    ```sh
    # from agent-service-toolkit/
-   AUTH_SECRET= PORT=8081 python src/run_service.py
+   MODE=dev PORT=8081 uv run python src/run_service.py
    ```
 
-   Prefer to keep auth on? Leave `AUTH_SECRET` set and give the browser the token
-   via `VITE_AGENT_TOKEN` (see step 4).
+   **Auth note (important):** if the repo-root `.env` sets `AUTH_SECRET`, bearer auth
+   is ON and the browser must send a matching token. Setting `AUTH_SECRET=` (empty) on
+   the command line does **not** disable it — `Settings` uses `env_ignore_empty=True`, so
+   an empty value is ignored and it falls back to the `.env` value (verified). The clean
+   fix is to give the browser the token via a git-ignored `frontend/.env`
+   (`VITE_AGENT_TOKEN=<same value as AUTH_SECRET>`, see step 4) and run the service
+   normally with auth ON. (Only remove/blank `AUTH_SECRET` *in `.env` itself* if you truly
+   want auth off.) NOTE: Vite inlines `VITE_*` vars into the browser bundle, so this
+   embedded-token shortcut is for **local dev only** — a production browser app would use a
+   real user-auth flow, not a shared bearer secret.
 
 2. In a separate terminal, install and run the client:
 
