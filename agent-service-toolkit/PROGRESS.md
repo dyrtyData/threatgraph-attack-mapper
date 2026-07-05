@@ -178,6 +178,20 @@ forking off `main` doesn't rediscover them:
    canned agent until restarted; once restarted in dev mode a non-seed snippet correctly
    extracted `T1003.001` (LSASS), which is absent from the canned chain — proving the real path.)
 
+4. **Langfuse tracing is OFF by default — set `LANGFUSE_TRACING=true`.** `Settings.LANGFUSE_TRACING`
+   defaults to `false`, so the FastAPI service does NOT emit traces unless the env var is set —
+   even though the keys are in `.env`. Symptom: Streamlit runs work but the Langfuse project stays
+   empty (no per-node spans). Fix: add `LANGFUSE_TRACING=true` to `.env` and restart the service;
+   each request then produces a trace with the `guard_input → retrieve → extractor → graph_architect
+   → defensive_guardrail` span tree (latency + tokens). Note the eval **experiment** (`evals/run_experiment.py`)
+   pushes its own traces via the `Langfuse()` client regardless of this flag — this flag only gates
+   the *live service* tracing. General lesson for future projects: enabling the tracing SDK ≠ tracing
+   on; there's usually an explicit on/off flag separate from the credentials.
+   - Also: the Langfuse **REST API** works with the project public/secret keys via HTTP Basic auth
+     (`curl -u pk:sk https://us.cloud.langfuse.com/api/public/traces`) — verified. There is **no
+     official Langfuse CLI**; project/evaluator setup is UI-only (or org-scoped API). Programmatic
+     read/write of traces/scores/datasets is via the REST API or the `langfuse` Python SDK.
+
 ### Git housekeeping: `main` promoted to the clean shared base
 
 To support running unrelated future projects as parallel worktree branches off a common base,
