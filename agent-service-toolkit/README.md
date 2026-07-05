@@ -197,6 +197,45 @@ You can also run the agent service and the Streamlit app locally without Docker,
 
 4. Open your browser and navigate to the URL provided by Streamlit (usually `http://localhost:8501`).
 
+### React client (Vite + Tailwind v4) — `threatgraph` polished UI
+
+A minimal Vite + React + TypeScript + Tailwind v4 client lives in the repo-root
+`frontend/` directory (sibling to `agent-service-toolkit/`). It consumes the same
+FastAPI `POST /threatgraph/stream` SSE endpoint (via `fetch` +
+`response.body.getReader()`) and renders the Mermaid attack graph plus the
+validated defense configuration.
+
+1. Start the FastAPI server (the client's default backend is `http://localhost:8081`):
+
+   ```sh
+   # from agent-service-toolkit/
+   PORT=8081 python src/run_service.py
+   ```
+
+2. In a separate terminal, install and run the client:
+
+   ```sh
+   cd ../frontend
+   npm ci          # or `npm install` the first time (creates package-lock.json)
+   npm run dev     # http://localhost:5173
+   ```
+
+3. Build / test the client:
+
+   ```sh
+   npm run build   # tsc -b && vite build → frontend/dist
+   npm run test    # vitest (SSE parser + AttackGraph smoke tests)
+   ```
+
+**Configuration.** The backend base URL is set via the `VITE_AGENT_URL`
+environment variable (default `http://localhost:8081`). Copy `frontend/.env.example`
+to `frontend/.env` to override it, e.g. `VITE_AGENT_URL=http://localhost:8081`. If the
+service is started with an `AUTH_SECRET`, set `VITE_AGENT_TOKEN` to the bearer token;
+locally, with `AUTH_SECRET` unset, no token is required.
+
+> `frontend/node_modules/` and `frontend/dist/` are git-ignored; only source and
+> `package-lock.json` are committed.
+
 ## Projects built with or inspired by agent-service-toolkit
 
 The following are a few of the public projects that drew code or inspiration from this repo.

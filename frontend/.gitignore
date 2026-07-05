@@ -1,0 +1,19 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+dist-ssr/
+
+# Vite / TS caches
+.vite/
+*.tsbuildinfo
+
+# Local env overrides (VITE_AGENT_URL etc.)
+.env
+.env.local
+.env.*.local
+
+# Logs / editor
+*.log
+.DS_Store

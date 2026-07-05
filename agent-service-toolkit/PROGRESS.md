@@ -95,7 +95,7 @@ Filled in by later phases (dry-run deliverable — informs the live-run cut list
 | Mem0 recall/write round-trip | **~0.0002 ms/pair (disabled fail-open no-op)** | Phase 4 — default path is DISABLED (no key) → `recall`/`remember` short-circuit before any SDK call. Mocked-client path (offline tests) adds only `MagicMock` overhead. **Real hosted v3 round-trip is a live-key manual step** (not exercised by default; keeps `pytest` offline) — measure it during the two-run recall manual verification. |
 | Langfuse experiment run | 2m09s (129s) wall-clock | Phase 5 — offline harness + evaluators built & tested (10 tests). Live `run_experiment.py` on 2026-07-05: dataset upsert + 5-item experiment over the real graph (hybrid RAG + cross-encoder reranker + guardrails + LLM extraction). `cross-encoder/ms-marco-MiniLM-L6-v2` (~88MB) was already HF-cached, so no download occurred this run (add ~download time on a cold cache). |
 | Streamlit UI build | ~20 min (Phase 1 skeleton) | Phase 1/3 — custom-message branch + Mermaid renderer w/ CDN fallback |
-| Vite + React + Tailwind client build | _tbd_ | Phase 6 |
+| Vite + React + Tailwind client build | **2.86 s** (`npm run build`, wall-clock) | Phase 6 — `tsc -b && vite build`; Vite 8 + `@tailwindcss/vite` v4 + mermaid 11; node v22.23.1. `npm install` ~30 s (244 pkgs, one-time). `npm run test` (vitest) 5 tests ~1.3 s. |
 | Open WebUI wiring | _tbd_ | Phase 7 |
 
 ---
@@ -777,3 +777,61 @@ fn drives the real graph but the graph's LLM + retrieval are the monkeypatch sea
 from Phase 2). The one packaging wrinkle — a standalone `evals/` dir that must import both `src/`
 (for the graph) and its own siblings, and run *both* as a script and under pytest — is solved by a
 tiny `sys.path` bootstrap in the script + `pythonpath = ["src", "evals"]` for pytest.
+
+---
+
+## 2026-07-04 — Phase 6: Vite + React + Tailwind client on FastAPI POST-SSE
+
+The polished presentation layer over the **same** FastAPI backend (Streamlit stays as the
+dev/fast path). A minimal Vite + React + TS + Tailwind v4 client at repo-root `frontend/`
+(sibling to `agent-service-toolkit/`) consumes `POST /threatgraph/stream` and renders the
+Mermaid attack graph + validated defense config.
+
+### Built
+
+- **`frontend/`** — Vite 8 + React 19 + TypeScript 5.9 scaffold. Tailwind v4 via the
+  `@tailwindcss/vite` plugin + a single `@import "tailwindcss";` in `src/index.css`
+  (**no** `tailwind.config.js` / postcss / `@tailwind` triad).
+- **`src/api/stream.ts`** — the load-bearing piece: a POST-SSE reader. Native `EventSource`
+  is GET-only, so it uses `fetch` + `response.body.getReader()` + `TextDecoder`, buffers the
+  byte stream and frame-splits on `"\n\n"`, **keeps the incomplete tail**, parses `data:` lines
+  into the toolkit's `{type: token|message|error}` line protocol, stops on `[DONE]`, and cancels
+  via `AbortController`. The terminal `custom` ChatMessage is detected by a `mermaid` key in
+  `custom_data` and unpacked to `{mechanics, mermaid, defense_config, recalled_memories}` —
+  exactly mirroring the Python `AgentClient._parse_stream_line` + Streamlit `draw_threatgraph_output`.
+- **`src/components/AttackGraph.tsx`** — `mermaid` npm v11. `mermaid.initialize({startOnLoad:false})`
+  **once** at module load; in `useEffect`, `await mermaid.parse(chart)` then `mermaid.render(id, chart)`
+  with a `useId()`-derived, colon-stripped **CSS-safe id** and a `cancelled` cleanup flag; sets
+  `innerHTML` from the returned svg. Falls back to a readable error panel on parse/render failure
+  (mirrors the reliability intent of the Streamlit CDN fix).
+- **`src/components/DefenseConfig.tsx`** — tables of the validated defense config + extracted
+  mechanics, plus a recalled-memories list (Mem0, Phase 4) when present.
+- **`src/App.tsx`** — textarea (prefilled sample) → Analyze button → spinner/Cancel while awaiting
+  → AttackGraph + DefenseConfig. Clean minimal Tailwind styling.
+- Backend base URL is configurable via **`VITE_AGENT_URL`** (default `http://localhost:8081`);
+  optional **`VITE_AGENT_TOKEN`** bearer for when the service sets `AUTH_SECRET`. `.env.example` provided.
+- Tests (Vitest + jsdom + Testing Library): `stream.test.ts` exercises token/tail-buffering/
+  terminal-custom/error/HTTP-error via a mocked `fetch` streaming a `ReadableStream`;
+  `AttackGraph.test.tsx` is a mount-and-settle smoke test (jsdom can't fully lay out SVG, so it
+  tolerates the error branch — a shallow render check, per the outline's note).
+
+### Verification
+
+- `npm install` → 244 packages, 0 vulnerabilities (~30 s, one-time; `package-lock.json` committed).
+- `npm run build` (`tsc -b && vite build`) ✓ — **2.86 s wall-clock**.
+- `npm run test` → **5 passed** (~1.3 s).
+- Hygiene: `frontend/node_modules/` and `frontend/dist/` git-ignored (own `frontend/.gitignore`);
+  `git add -n frontend/` stages **0** node_modules paths — only source + `package-lock.json`.
+
+### Deviations / notes
+
+- Versions pinned to current-latest that satisfy peer deps: `@vitejs/plugin-react` v6 requires
+  Vite **8**, so the scaffold is Vite 8 (not the "7" in older docs) with Vitest 4. Node v22.23.1.
+- `stream_tokens:false` from the client — the `threatgraph` payload arrives as one terminal
+  `custom` message, so token streaming isn't needed for this UI (the reader still handles tokens
+  for completeness / future agents).
+
+### Remaining (manual, human)
+
+- `npm run dev`, submit a snippet, compare the rendered Mermaid graph + defense config to the
+  Streamlit output (backend on `PORT=8081`).
