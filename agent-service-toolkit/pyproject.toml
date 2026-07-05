@@ -100,7 +100,10 @@ target-version = "py312"
 extend-select = ["I", "U"]
 
 [tool.pytest.ini_options]
-pythonpath = ["src"]
+# "evals" is on the path so tests can import the standalone Phase-5 harness modules
+# (dataset / evaluators / run_experiment) as siblings — matching how the script is run
+# (`uv run python evals/run_experiment.py`, where evals/ is sys.path[0]).
+pythonpath = ["src", "evals"]
 asyncio_default_fixture_loop_scope = "function"
 
 [tool.pytest_env]

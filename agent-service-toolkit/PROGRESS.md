@@ -93,7 +93,7 @@ Filled in by later phases (dry-run deliverable — informs the live-run cut list
 | Cross-encoder rerank | **~84 ms / query** | Phase 2 — `ms-marco-MiniLM-L6-v2`, 15 candidates, model cached. **First-run model download: ~27 s (~90 MB), one-time, opt-in `--run-integration`** |
 | Guardrails AI validation | **~10.6 ms / call** | Phase 3 — `Guard.for_pydantic(DefenseConfig).parse(...)`, 3-entry config, local Pydantic structural validation (no Hub inference; `use_remote_inferencing=false`). One-time cold cost: `import guardrails` + `Guard.for_pydantic` build **~1.18 s** |
 | Mem0 recall/write round-trip | **~0.0002 ms/pair (disabled fail-open no-op)** | Phase 4 — default path is DISABLED (no key) → `recall`/`remember` short-circuit before any SDK call. Mocked-client path (offline tests) adds only `MagicMock` overhead. **Real hosted v3 round-trip is a live-key manual step** (not exercised by default; keeps `pytest` offline) — measure it during the two-run recall manual verification. |
-| Langfuse experiment run | _tbd_ | Phase 5 |
+| Langfuse experiment run | _run live to populate_ | Phase 5 — offline harness + evaluators built & tested (10 tests). Live `run_experiment.py` wall-clock (dataset upsert + 5-item experiment over the real graph, incl. reranker warm-up) is a keyed manual step; record it here after the live run. |
 | Streamlit UI build | ~20 min (Phase 1 skeleton) | Phase 1/3 — custom-message branch + Mermaid renderer w/ CDN fallback |
 | Vite + React + Tailwind client build | _tbd_ | Phase 6 |
 | Open WebUI wiring | _tbd_ | Phase 7 |
@@ -678,3 +678,80 @@ default and never raises `ValueError` from a missing `.index(...)`.
 default. A demo/tool should open on its own primary experience — but guard the lookup (`if in
 list` + graceful fallback) so removing or renaming that agent in a fork degrades gracefully
 instead of crashing the sidebar.
+
+---
+
+## 2026-07-04 — Phase 5: Langfuse dataset + experiment eval (SDK evaluators + UI LLM-as-a-judge)
+
+Score the agent's own output (AC8) with a Langfuse **dataset + experiment**, plus notes for the
+UI-configured LLM-as-a-judge half of DQ7. Tracing already rides the run config (AC7, Phase 0/1),
+so this is a standalone `evals/` harness — no service/graph changes.
+
+### Built
+
+- **`evals/dataset.py`** — 5 threat-intel cases with *known* expected ATT&CK ids: the seed
+  ransomware-phishing kill chain (`T1566.001→T1204.002→T1059.001→T1486`) plus four distinct
+  multi-tactic incidents (the **APT29 / Mimikatz-LSASS / RDP / cloud-exfil** case
+  `T1003.001→T1021.001→T1567.002`, a web-exploit→web-shell→create-account chain, a brute-force→RDP→
+  disable-tools chain, and a spearphishing-link→valid-accounts→collect chain). Every id is a real
+  ATT&CK id so the expectations are checkable. Pure data (no Langfuse at import).
+- **`evals/evaluators.py`** — two deterministic SDK evaluators returning `langfuse.Evaluation`:
+  - `mechanics_correctness(*, input, output, expected)` — technique-id overlap; **F1** headline
+    value (perfect→1.0, disjoint→0.0), precision/recall/Jaccard in `metadata`/`comment`.
+  - `defense_faithfulness(*, input, output, expected)` — fraction of the defense config's
+    mitigation ids that are **grounded** (present in the retrieved `attack_context` ∪ the expected
+    set) vs. invented; empty config is vacuously faithful (1.0).
+  - Output is normalized through the shared `ExtractedMechanics` / `DefenseConfig` Pydantic types
+    (imported from `schema.schema`). Both the outline's `expected=` and the framework's
+    `expected_output=` kwargs are accepted (`**kwargs` absorbs the rest).
+- **`evals/run_experiment.py`** — `run_threatgraph(*, item)` task fn runs the compiled graph and
+  returns `{mechanics, mermaid, defense_config, attack_context}`; `build_dataset` +
+  `dataset.run_experiment(name=, task=, evaluators=[...])` on the **Langfuse v4** API. Import-safe
+  (no `Langfuse()` at import; client built only inside `main()`), runnable as a script.
+- **`evals/README.md`** — run instructions (offline tests + live experiment) and the step-by-step
+  **UI LLM-as-a-judge** configuration (DQ7 second half — console config, not code).
+- **`tests/evals/test_evaluators.py`** — 10 offline tests: evaluator scoring (perfect/disjoint/
+  partial for both), `expected_output` kwarg compat, harness importability, and the task fn driving
+  the real graph offline (`FakeToolModel` + seed retrieval). `pyproject.toml`: `pythonpath` gains
+  `evals` so the sibling-import harness is importable under pytest (matches script layout).
+
+### Langfuse v4 API confirmed (research §9.3)
+
+Verified against the installed **langfuse 4.12.0**: `Langfuse.create_dataset(name=...)`,
+`create_dataset_item(dataset_name=, input=, expected_output=)`, `get_dataset(name).run_experiment(
+name=, task=, evaluators=[...])`, evaluators invoked with `input/output/expected_output/metadata`
+kwargs and returning `langfuse.Evaluation(name=, value=, comment=, metadata=)`. This is the v4
+surface that replaced v3 `item.run()` — no API mismatch, no deviation needed.
+
+### Experiment results (SDK evaluators)
+
+Offline harness is green; the **live experiment is a keyed manual step** — run
+`uv run python evals/run_experiment.py` with `LANGFUSE_*` (US) keys to populate the numbers below.
+
+| Case | mechanics_correctness (F1) | defense_faithfulness | Notes |
+| --- | --- | --- | --- |
+| ransomware-phishing | _run live to populate_ | _run live_ | seed kill chain |
+| apt29-mimikatz-rdp-exfil | _run live to populate_ | _run live_ | cred-access→lateral→exfil |
+| exploit-webshell-persistence | _run live to populate_ | _run live_ | initial-access→persistence |
+| brute-force-rdp-defense-evasion | _run live to populate_ | _run live_ | cred-access→lateral→defense-evasion |
+| spearphishing-link-valid-accounts | _run live to populate_ | _run live_ | initial-access→collection |
+| **mean** | _run live to populate_ | _run live_ | + UI LLM-as-a-judge column once attached |
+
+(The **UI LLM-as-a-judge** scores are added as extra columns after attaching a managed evaluator
+to the captured traces / experiment run — see `evals/README.md`. Record the Langfuse experiment-run
+wall-clock in the timing table above.)
+
+### Verification
+
+- `uv run pytest tests/evals -q` → **10 passed** (offline; no live Langfuse).
+- Full suite: **169 passed, 3 skipped** (was 159+3 in Phase 4; +10 new).
+- Live `run_experiment.py` + Langfuse-UI checks (dataset, experiment run, per-item SDK scores,
+  managed LLM-as-a-judge) remain a keyed manual step for the human.
+
+### General lesson
+
+Keep the eval harness **import-safe and offline by default**: no network client at import, task
+fn drives the real graph but the graph's LLM + retrieval are the monkeypatch seams (already there
+from Phase 2). The one packaging wrinkle — a standalone `evals/` dir that must import both `src/`
+(for the graph) and its own siblings, and run *both* as a script and under pytest — is solved by a
+tiny `sys.path` bootstrap in the script + `pythonpath = ["src", "evals"]` for pytest.
