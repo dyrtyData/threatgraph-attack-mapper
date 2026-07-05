@@ -93,7 +93,7 @@ Filled in by later phases (dry-run deliverable — informs the live-run cut list
 | Cross-encoder rerank | **~84 ms / query** | Phase 2 — `ms-marco-MiniLM-L6-v2`, 15 candidates, model cached. **First-run model download: ~27 s (~90 MB), one-time, opt-in `--run-integration`** |
 | Guardrails AI validation | **~10.6 ms / call** | Phase 3 — `Guard.for_pydantic(DefenseConfig).parse(...)`, 3-entry config, local Pydantic structural validation (no Hub inference; `use_remote_inferencing=false`). One-time cold cost: `import guardrails` + `Guard.for_pydantic` build **~1.18 s** |
 | Mem0 recall/write round-trip | **~0.0002 ms/pair (disabled fail-open no-op)** | Phase 4 — default path is DISABLED (no key) → `recall`/`remember` short-circuit before any SDK call. Mocked-client path (offline tests) adds only `MagicMock` overhead. **Real hosted v3 round-trip is a live-key manual step** (not exercised by default; keeps `pytest` offline) — measure it during the two-run recall manual verification. |
-| Langfuse experiment run | _run live to populate_ | Phase 5 — offline harness + evaluators built & tested (10 tests). Live `run_experiment.py` wall-clock (dataset upsert + 5-item experiment over the real graph, incl. reranker warm-up) is a keyed manual step; record it here after the live run. |
+| Langfuse experiment run | 2m09s (129s) wall-clock | Phase 5 — offline harness + evaluators built & tested (10 tests). Live `run_experiment.py` on 2026-07-05: dataset upsert + 5-item experiment over the real graph (hybrid RAG + cross-encoder reranker + guardrails + LLM extraction). `cross-encoder/ms-marco-MiniLM-L6-v2` (~88MB) was already HF-cached, so no download occurred this run (add ~download time on a cold cache). |
 | Streamlit UI build | ~20 min (Phase 1 skeleton) | Phase 1/3 — custom-message branch + Mermaid renderer w/ CDN fallback |
 | Vite + React + Tailwind client build | _tbd_ | Phase 6 |
 | Open WebUI wiring | _tbd_ | Phase 7 |
@@ -730,12 +730,20 @@ Offline harness is green; the **live experiment is a keyed manual step** — run
 
 | Case | mechanics_correctness (F1) | defense_faithfulness | Notes |
 | --- | --- | --- | --- |
-| ransomware-phishing | _run live to populate_ | _run live_ | seed kill chain |
-| apt29-mimikatz-rdp-exfil | _run live to populate_ | _run live_ | cred-access→lateral→exfil |
-| exploit-webshell-persistence | _run live to populate_ | _run live_ | initial-access→persistence |
-| brute-force-rdp-defense-evasion | _run live to populate_ | _run live_ | cred-access→lateral→defense-evasion |
-| spearphishing-link-valid-accounts | _run live to populate_ | _run live_ | initial-access→collection |
-| **mean** | _run live to populate_ | _run live_ | + UI LLM-as-a-judge column once attached |
+| ransomware-phishing | 0.571 | 1.000 | seed kill chain |
+| apt29-mimikatz-rdp-exfil | 0.800 | 1.000 | cred-access→lateral→exfil |
+| exploit-webshell-persistence | 1.000 | 1.000 | initial-access→persistence |
+| brute-force-rdp-defense-evasion | 0.400 | 1.000 | cred-access→lateral→defense-evasion |
+| spearphishing-link-valid-accounts | 0.800 | 1.000 | initial-access→collection |
+| **mean** | **0.714** | **1.000** | + UI LLM-as-a-judge column once attached |
+
+Live run recorded 2026-07-05 (US region, project "My Project" / org "Dyrty's Organization"). Dataset
+`threatgraph-mvp` (5 items); experiment run name `threatgraph-sdk-eval - 2026-07-05T01:08:14.300410Z`.
+Note: `MEM0_API_KEY` IS present in the workspace `.env`, so the experiment ran with Mem0 active
+(the graph recalled/wrote memories per item). Memory provides extra grounding context but does not
+change how the two SDK evaluators score the output (they judge extracted techniques vs expected and
+mitigation-grounding vs `attack_context`), so the scores reflect the graph's extraction/defense
+quality regardless of Mem0.
 
 (The **UI LLM-as-a-judge** scores are added as extra columns after attaching a managed evaluator
 to the captured traces / experiment run — see `evals/README.md`. Record the Langfuse experiment-run
