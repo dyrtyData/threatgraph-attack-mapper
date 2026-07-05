@@ -7,8 +7,10 @@ are covered:
 
 * DISABLED (no ``MEM0_API_KEY``): ``get_mem0()`` -> ``None``, ``recall`` -> ``[]``,
   ``remember`` -> no-op, and the full graph still runs to completion (fail-open).
-* ENABLED (key set, client mocked): ``recall`` / ``remember`` call ``search`` / ``add`` with
-  the correct ``app_id`` / ``user_id`` scope inside ``filters`` and NO deprecated v3 flags
+* ENABLED (key set, client mocked): ``recall`` calls ``search`` with the ``app_id`` /
+  ``user_id`` scope inside ``filters`` (search rejects top-level entity params), while
+  ``remember`` calls ``add`` with the SAME ids as TOP-LEVEL kwargs (the /v3 add endpoint
+  rejects filters-only scoping with HTTP 400). Neither passes a deprecated v3 flag
   (``version`` / ``enable_graph`` / ``output_format``) — the DQ4 auto-graph contract.
 """
 
@@ -150,12 +152,12 @@ def test_remember_calls_add_with_scope(monkeypatch):
     fake_client.add.assert_called_once()
     args, kwargs = fake_client.add.call_args
     assert args[0] == msgs
-    filters = kwargs["filters"]
-    assert filters.get("user_id") == USER_ID
-    assert filters.get("app_id") == APP_ID
+    # `add` scopes via TOP-LEVEL entity kwargs (the /v3 add endpoint 400s on filters-only).
+    assert kwargs.get("user_id") == USER_ID
+    assert kwargs.get("app_id") == APP_ID
+    assert "filters" not in kwargs
     for banned in ("version", "enable_graph", "output_format"):
         assert banned not in kwargs
-        assert banned not in filters
 
 
 def test_recall_fails_open_on_client_error(monkeypatch):

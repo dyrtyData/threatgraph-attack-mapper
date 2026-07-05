@@ -142,7 +142,13 @@ async def main() -> None:
             model_idx = agent_client.info.models.index(agent_client.info.default_model)
             model = st.selectbox("LLM to use", options=agent_client.info.models, index=model_idx)
             agent_list = [a.key for a in agent_client.info.agents]
-            agent_idx = agent_list.index(agent_client.info.default_agent)
+            # Default the selector to this project's own agent (threatgraph) when the service
+            # exposes it; fall back to the service default otherwise (keeps forks safe).
+            preferred_agent = "threatgraph"
+            if preferred_agent in agent_list:
+                agent_idx = agent_list.index(preferred_agent)
+            else:
+                agent_idx = agent_list.index(agent_client.info.default_agent)
             agent_client.agent = st.selectbox(
                 "Agent to use",
                 options=agent_list,

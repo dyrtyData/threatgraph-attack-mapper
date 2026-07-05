@@ -28,7 +28,7 @@ deliverable versus genuine nice-to-have / out-of-scope, not what we intend to sk
 | --- | --- | --- |
 | Orchestration | LangGraph `StateGraph` — new `threatgraph` sibling agent | `guard_input → retrieve → extractor → graph_architect → defensive_guardrail → END`; registered by one import + one dict entry in `agents.py` (toolkit's only discovery mechanism). |
 | Knowledge retrieval / grounding | **Full hybrid RAG** (DQ2) | BM25 + dense (Chroma) fused via `EnsembleRetriever` weighted RRF, then `CrossEncoder` rerank, over the **full ~650+ record** MITRE ATT&CK corpus. Isolated behind one function so a dense-only fallback is a one-line swap for the live run. |
-| Memory | **Hosted Mem0 v3** (DQ4) | `MemoryClient.add/.search`, scoped `app_id=perficient-threatgraph`, `user_id=dyrtydata`. Graph memory is automatic on v3 — **no** deprecated `enable_graph`/`version="v2"` flags (documented deviation from AC4's literal wording; see Phase 4). Fail-open no-op when `MEM0_API_KEY` is unset. |
+| Memory | **Hosted Mem0 v3** (DQ4) | `MemoryClient.add/.search`, scoped `app_id=perficient-threatgraph`, `user_id=dyrtydata`. **Scoping is asymmetric: `add` takes `user_id`/`app_id` as TOP-LEVEL kwargs; `search` takes them inside `filters=`** (add 400s on filters-only; search rejects top-level — verified live 2026-07-04, see Phase 4). Graph memory is automatic on v3 — **no** deprecated `enable_graph`/`version="v2"` flags. Fail-open no-op when `MEM0_API_KEY` is unset. |
 | Safety / guardrails | **Guardrails AI** (output) + existing `Safeguard` (input) (DQ3) | `Guard.for_pydantic(DefenseConfig, on_fail=reask/fix)` validates the defense config; existing prompt-injection classifier gates input. Both fail open. |
 | Observability | **Langfuse** (US region) | Tracing rides the existing `RunnableConfig` callback automatically — no per-node instrumentation needed. Keys already in `.env`. |
 | Agent evaluation | **Langfuse dataset + experiment** (DQ7) | In-repo SDK evaluators (defense-config faithfulness, extracted-mechanics correctness) **and** UI-configured LLM-as-a-judge scores on captured traces. Results table lands here. |
@@ -543,16 +543,51 @@ hosted platform migrated v2→v3, so **Graph Memory is automatic**. We call `add
 score). AC4's *intent* — graph+vector fusion, auto fact-extraction, correct `app_id`/`user_id`
 scoping — is fully satisfied.
 
-### API-shape note (confirmed against the installed SDK at implementation time)
+### API-shape note (CORRECTED 2026-07-04 — the earlier "filters for both" note was WRONG)
 
-The outline sketched `add(messages, user_id=..., app_id=...)` and `search(query,
-filters={...})`. The installed **`mem0ai` 2.0.11** v3 client requires entity ids
-(`user_id`/`app_id`) to be passed **inside the `filters` dict for BOTH `add` and `search`** —
-`search()` actively **raises** on top-level entity params (`ENTITY_PARAMS = {user_id, agent_id,
-app_id, run_id}`), and `AddMemoryOptions` documents the same for `add`. So both calls use
-`filters={"user_id": USER_ID, "app_id": APP_ID}` (a small, verified API-shape deviation from the
-outline's `add(...)` sketch; the outline explicitly instructed confirming the current API at
-implementation time). No `version` kwarg is passed anywhere.
+> **Supersedes the prior note.** An earlier revision claimed entity ids go **inside `filters`
+> for BOTH `add` and `search`**. That was **wrong for `add`** and is the direct cause of the
+> "0 stored memories" bug below. The two calls scope entities **asymmetrically**:
+>
+> * **`add` requires TOP-LEVEL entity kwargs** — `client.add(messages, user_id=..., app_id=...)`.
+>   Passing them inside `filters=` makes `POST /v3/memories/add/` reject the write with
+>   **HTTP 400 `ValidationError`: "At least one entity ID is required (user_id, agent_id,
+>   app_id, or run_id)."** The add endpoint does **not** read entity ids from `filters`. (The
+>   docstring lists `user_id`/`app_id` as valid top-level kwargs; `add` does **not** guard
+>   against them — only `search`/`get_all` do.)
+> * **`search`/`get_all` require the scope INSIDE `filters=`** and actively **raise
+>   `ValueError`** on top-level entity params (`ENTITY_PARAMS = {user_id, agent_id, app_id,
+>   run_id}`). No `version="v2"` kwarg is needed — v3 filters work plainly.
+>
+> Verified against the installed **`mem0ai` 2.0.11** SDK **and the live hosted API**.
+
+**Root cause of the "add logged as a request but 0 memories stored" bug:** `remember()` called
+`client.add(messages, filters={user_id, app_id})`. Server returned **400** ("At least one
+entity ID is required…"); `remember`'s broad fail-open `except` swallowed it as a warning, so
+every write silently no-op'd. The `add` still hit the API (hence "requests logged"), but stored
+nothing → `search` always returned `[]` → UI showed "No prior memories recalled".
+
+**Fix (`src/memory/mem0_client.py`):**
+- `remember` → `client.add(messages, **_SCOPE)` — entity ids **top-level** (`_SCOPE = {"user_id":
+  USER_ID, "app_id": APP_ID}`), file:`src/memory/mem0_client.py:remember`.
+- `recall` → `client.search(query, filters=dict(_SCOPE), top_k=...)` — **unchanged**, scope in
+  `filters` (correct for search).
+
+**Live round-trip proof (real key, throwaway script, since cleaned up):**
+```
+remember([{user: "…Cobalt Strike beacon via T1055 process injection into explorer.exe"},
+          {assistant: "…Extracted techniques: T1055; mitigations: M1040 counters T1055"}])
+# wait ~20s for async v3 extraction
+recall("Cobalt Strike process injection explorer.exe T1055") -> 4 memories (NON-EMPTY):
+  - "…threat actor deployed a Cobalt Strike beacon by using ATT&CK technique T1055
+     (Process Injection) to inject code into explorer.exe." | score 0.40
+  - "…recommended mitigation M1040 to counter ATT&CK technique T1055…" | score 0.27
+  (+ 2 prior probe memories, since deleted)
+```
+Confirmed the same `add(filters=…)` path returns **400** while `add(user_id=…, app_id=…)`
+returns `{status: PENDING}` and the facts appear under the scope via both `get_all` and
+`search`. All probe/round-trip test memories were deleted afterward; the throwaway scripts
+were removed.
 
 ### Verification
 
@@ -567,21 +602,28 @@ implementation time). No `version` kwarg is passed anywhere.
   `MemoryClient`) to keep the default suite offline. Timing row records the disabled fail-open
   no-op (~0.0002 ms/pair); the real hosted v3 round-trip is the live-key manual step below.
 
-### Manual verification still pending (for the human — needs the real key)
+### Live round-trip — DONE (2026-07-04, real key)
 
-- With the real `MEM0_API_KEY` set, run the **same actor/technique twice**: the second run's
-  Extractor should recall the first analysis (the prepended "recalled from prior analyses"
-  block appears in its grounding). Confirm via the Mem0 dashboard or the `mem0` MCP, and note
-  the observed hosted round-trip latency into the timing table. Run the service with `MODE=dev`
-  + `PORT=8081`/`AGENT_URL` per the Phase-1 operational note.
+The hosted v3 write→recall round-trip is now **verified live** (see the API-shape section above):
+`remember()` stored an analysis turn, and after ~20s of async extraction `recall()` returned the
+extracted facts (NON-EMPTY, scoped to `app_id=perficient-threatgraph`/`user_id=dyrtydata`). This
+was previously broken (0 stored) purely because of the `add(filters=…)` scoping bug now fixed.
+Remaining optional manual step: run the full service twice on the same actor/technique to see the
+"recalled from prior analyses" block appear in the Extractor grounding + the "🧠 Recalled…"
+expander in the UI (`MODE=dev`, `PORT=8081`/`AGENT_URL` per the Phase-1 operational note).
 
 ### General lesson (future projects)
 
 Memory recall/write must be **fail-open and off the critical path**: gate on the key, wrap every
 SDK call in a broad `except` that no-ops, and keep the default test suite offline by neutralizing
 any ambient key in `conftest.py` + injecting a fake SDK module. Also **verify the installed SDK's
-actual signatures** before wiring — the hosted Mem0 client moved entity scoping into `filters`
-(and now *rejects* top-level `user_id`/`app_id` on `search`), which a stale API sketch would miss.
+actual signatures against the LIVE API** before wiring — the hosted Mem0 client scopes entities
+**asymmetrically** (`add` = top-level `user_id`/`app_id`; `search`/`get_all` = inside `filters=`,
+which *reject* top-level ids). **Watch out: a broad fail-open `except` will happily swallow a real
+HTTP 400 as a "warning" and look like success** — the write "logged a request" yet stored nothing.
+When a fail-open path is meant to *do* something, prove it with a live round-trip (write → wait for
+async extraction → read it back), not just a mocked unit test asserting the call shape. A mock that
+encodes the *wrong* signature passes green while production silently no-ops.
 
 ### Enhancement — surface recalled memories in the UI (recall was invisible)
 
@@ -612,3 +654,27 @@ output, **surface *what* was recalled in the UI** — expose the retrieved items
 output payload the UI already consumes. Otherwise the behavior is untraceable: you can't tell a
 "recall did nothing" run from a "recall fed in the wrong facts" run. Make the influence visible so
 it is demonstrable and debuggable, not just internal.
+
+### Streamlit default agent → `threatgraph` (2026-07-04)
+
+The sidebar "Agent to use" selectbox previously defaulted to the **service** `default_agent`
+(`research-assistant`), so anyone opening the UI landed on a stock agent instead of the one this
+project actually builds. Fixed in **`src/streamlit_app.py`**: compute the selectbox `index=` from
+the position of `"threatgraph"` when it is present in the agent list, else fall back to
+`agent_client.info.default_agent`:
+
+```python
+preferred_agent = "threatgraph"
+if preferred_agent in agent_list:
+    agent_idx = agent_list.index(preferred_agent)
+else:
+    agent_idx = agent_list.index(agent_client.info.default_agent)
+```
+
+The guard keeps forks safe — if `threatgraph` isn't registered, the UI still opens on the service
+default and never raises `ValueError` from a missing `.index(...)`.
+
+**General lesson:** default the UI to the agent the project builds, not the upstream template's
+default. A demo/tool should open on its own primary experience — but guard the lookup (`if in
+list` + graceful fallback) so removing or renaming that agent in a fork degrades gracefully
+instead of crashing the sidebar.
