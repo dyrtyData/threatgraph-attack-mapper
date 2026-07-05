@@ -42,3 +42,29 @@ def mock_env():
     """Fixture to ensure environment is clean for each test."""
     with patch.dict(os.environ, {}, clear=True):
         yield
+
+
+@pytest.fixture(autouse=True)
+def _mem0_offline_by_default(monkeypatch):
+    """Keep the default suite OFFLINE: disable hosted Mem0 unless a test opts in.
+
+    The repo-root ``.env`` carries a real ``MEM0_API_KEY`` (picked up by ``find_dotenv`` when
+    ``Settings`` is constructed), which would otherwise make the ``threatgraph`` extractor /
+    defensive_guardrail issue real Mem0 network calls during tests. Neutralize it globally
+    (test-scoped, auto-reverted) and clear the cached client. Tests that exercise the enabled
+    path re-set the key via their own ``monkeypatch`` — that runs after this fixture and wins,
+    and injects a fake ``MemoryClient`` so no real network call ever happens. Mirrors the
+    Phase-0 ``AUTH_SECRET`` neutralization pattern.
+    """
+    try:
+        from core.settings import settings as _settings
+
+        monkeypatch.setattr(_settings, "MEM0_API_KEY", None, raising=False)
+        from memory.mem0_client import get_mem0
+
+        get_mem0.cache_clear()
+        yield
+        get_mem0.cache_clear()
+    except Exception:
+        # If the toolkit modules aren't importable in some test context, don't block the test.
+        yield

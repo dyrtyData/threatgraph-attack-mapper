@@ -119,6 +119,11 @@ class Settings(BaseSettings):
     LANGFUSE_PUBLIC_KEY: SecretStr | None = None
     LANGFUSE_SECRET_KEY: SecretStr | None = None
 
+    # Mem0 hosted memory (v3 — graph memory is automatic; DQ4). Declared here only for
+    # validation/gating of the threatgraph memory node; the hosted ``mem0`` SDK reads
+    # MEM0_API_KEY from the environment itself. Unset -> memory is a fail-open no-op.
+    MEM0_API_KEY: SecretStr | None = None
+
     # Database Configuration
     DATABASE_TYPE: DatabaseType = (
         DatabaseType.SQLITE

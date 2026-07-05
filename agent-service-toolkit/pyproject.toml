@@ -63,6 +63,8 @@ dependencies = [
     "sentence-transformers>=3.0",  # CrossEncoder reranker
     # PF-001 Phase 3 — Guardrails AI structured-output (Pydantic) validation of the defense config
     "guardrails-ai>=0.6",  # Guard.for_pydantic(DefenseConfig, on_fail=...); Hub token in ~/.guardrailsrc
+    # PF-001 Phase 4 — hosted Mem0 (v3) recall/write; graph memory automatic (no v2/enable_graph flags, DQ4)
+    "mem0ai>=0.1.0",  # from mem0 import MemoryClient; SDK reads MEM0_API_KEY from env
 ]
 
 [dependency-groups]

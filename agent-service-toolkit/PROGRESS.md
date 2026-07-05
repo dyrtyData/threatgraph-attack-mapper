@@ -92,7 +92,7 @@ Filled in by later phases (dry-run deliverable — informs the live-run cut list
 | RRF fusion (`EnsembleRetriever`) | **~1.2 s / query** | Phase 2 — fused query (BM25 top-10 ∪ dense top-10 → 15 candidates); retriever construction ~2.0 s (incl. dense leg open) |
 | Cross-encoder rerank | **~84 ms / query** | Phase 2 — `ms-marco-MiniLM-L6-v2`, 15 candidates, model cached. **First-run model download: ~27 s (~90 MB), one-time, opt-in `--run-integration`** |
 | Guardrails AI validation | **~10.6 ms / call** | Phase 3 — `Guard.for_pydantic(DefenseConfig).parse(...)`, 3-entry config, local Pydantic structural validation (no Hub inference; `use_remote_inferencing=false`). One-time cold cost: `import guardrails` + `Guard.for_pydantic` build **~1.18 s** |
-| Mem0 recall/write round-trip | _tbd_ | Phase 4 |
+| Mem0 recall/write round-trip | **~0.0002 ms/pair (disabled fail-open no-op)** | Phase 4 — default path is DISABLED (no key) → `recall`/`remember` short-circuit before any SDK call. Mocked-client path (offline tests) adds only `MagicMock` overhead. **Real hosted v3 round-trip is a live-key manual step** (not exercised by default; keeps `pytest` offline) — measure it during the two-run recall manual verification. |
 | Langfuse experiment run | _tbd_ | Phase 5 |
 | Streamlit UI build | ~20 min (Phase 1 skeleton) | Phase 1/3 — custom-message branch + Mermaid renderer w/ CDN fallback |
 | Vite + React + Tailwind client build | _tbd_ | Phase 6 |
@@ -492,3 +492,93 @@ embeds correctly in the `<pre>`).
 self-contained CDN / `components.html` approach over third-party components whose frontend assets
 can silently fail — and **never rely on Python `try/except` to catch browser-side component
 failures**, because they raise no Python exception on the server.
+
+---
+
+## 2026-07-04 — Phase 4: Mem0 hosted memory (v3) recall + write
+
+Wired hosted **Mem0 (v3)** into the graph: the Extractor **recalls** prior analyses and
+**prepends** them to its grounding before structured extraction; the Defensive_Guardrail
+**writes** the analysis turn after synthesis. All behind a small fail-open module that no-ops
+when `MEM0_API_KEY` is unset — same philosophy as `Safeguard` / retrieval / guardrails, so the
+graph never breaks on the memory step.
+
+### Built
+
+- **`src/memory/mem0_client.py`** (new) — lazy, fail-open wrapper: `get_mem0()`
+  (`@lru_cache`d hosted `MemoryClient`, `None` when the key is unset or the SDK can't
+  import/construct), `recall(query) -> list[dict]` (`[]` when disabled / on any error;
+  normalizes the v3 `{"results": [...]}` shape), `remember(messages) -> None` (no-op when
+  disabled / on any error). Scope constants `APP_ID="perficient-threatgraph"`,
+  `USER_ID="dyrtydata"`.
+- **`src/core/settings.py`** — declared `MEM0_API_KEY: SecretStr | None = None` (validation /
+  gating only; the SDK reads the env var itself).
+- **`src/agents/threatgraph.py`** — `extractor` calls `recall(raw_text)` and, when non-empty,
+  **prepends** a "recalled from prior analyses" block *before* the ATT&CK grounding
+  instructions (prompt byte-for-byte unchanged when recall is empty). `defensive_guardrail`
+  builds an `_analysis_turn` (user snippet + an assistant summary of extracted techniques +
+  recommended mitigations) and calls `remember(...)` after synthesis. Internal LLM calls keep
+  their `skip_stream` tags; recall/remember are plain sync calls (like the `retrieve` node).
+- **`pyproject.toml`** — added `mem0ai>=0.1.0` (resolved to **2.0.11**).
+- **`.env.example`** (root) — `MEM0_API_KEY` placeholder already present (verified; unchanged).
+- **`tests/conftest.py`** — added a global **autouse** `_mem0_offline_by_default` fixture that
+  neutralizes the ambient real `MEM0_API_KEY` (repo-root `.env`, picked up by `find_dotenv`)
+  and clears the client cache, so the default suite stays **offline**. Mirrors the Phase-0
+  `AUTH_SECRET` neutralization; enabled-path tests re-set the key via their own `monkeypatch`
+  (runs after, wins) and inject a fake `mem0` module — no real network call ever fires.
+- **`tests/agents/test_mem0.py`** (new, 11 tests) — disabled fail-open no-ops (`recall`→`[]`,
+  `remember`→no-op, `get_mem0`→`None`); the full graph runs to completion with Mem0 disabled;
+  the enabled (mocked-client) path asserts `search`/`add` are called with the `user_id`/`app_id`
+  scope **inside `filters`** and with **no** `version`/`enable_graph`/`output_format` flags;
+  recall normalizes both `{"results":[...]}` and bare-list shapes; recall/remember fail open on
+  client errors; the extractor **prepends** recalled facts (and leaves the prompt intact when
+  recall is empty); the defensive_guardrail writes the analysis turn.
+
+### DQ4 deviation — v3 auto-graph, no `enable_graph` / `version="v2"` (intentional, documented)
+
+Per **DQ4** this is a deliberate, documented **deviation from AC4's literal wording**: the
+hosted platform migrated v2→v3, so **Graph Memory is automatic**. We call `add`/`search`
+**plainly** with **no** deprecated `enable_graph` / `version="v2"` / `output_format` flags
+(they are ignored/removed on the current SDK; graph signal is folded into each result's unified
+score). AC4's *intent* — graph+vector fusion, auto fact-extraction, correct `app_id`/`user_id`
+scoping — is fully satisfied.
+
+### API-shape note (confirmed against the installed SDK at implementation time)
+
+The outline sketched `add(messages, user_id=..., app_id=...)` and `search(query,
+filters={...})`. The installed **`mem0ai` 2.0.11** v3 client requires entity ids
+(`user_id`/`app_id`) to be passed **inside the `filters` dict for BOTH `add` and `search`** —
+`search()` actively **raises** on top-level entity params (`ENTITY_PARAMS = {user_id, agent_id,
+app_id, run_id}`), and `AddMemoryOptions` documents the same for `add`. So both calls use
+`filters={"user_id": USER_ID, "app_id": APP_ID}` (a small, verified API-shape deviation from the
+outline's `add(...)` sketch; the outline explicitly instructed confirming the current API at
+implementation time). No `version` kwarg is passed anywhere.
+
+### Verification
+
+- `uv run pytest tests/agents/test_mem0.py -q` → **11 passed**;
+  `tests/agents/test_mem0.py tests/agents/test_threatgraph.py` → **18 passed**.
+- Full suite `uv run pytest -q` → **159 passed, 3 skipped** (was 148/3 entering the phase; +11
+  new Mem0 tests; the 3 skips remain the opt-in `--run-integration` reranker + 2 docker tests).
+  `ruff check` clean on all changed files.
+- **Fail-open confirmed:** with `MEM0_API_KEY` unset the compiled graph runs end-to-end and
+  emits mechanics + Mermaid + defense_config; `recall`→`[]`, `remember`→no-op, `get_mem0`→`None`.
+- **Real Mem0 was NOT exercised** — it was **mocked** (fake `mem0` module + `MagicMock`
+  `MemoryClient`) to keep the default suite offline. Timing row records the disabled fail-open
+  no-op (~0.0002 ms/pair); the real hosted v3 round-trip is the live-key manual step below.
+
+### Manual verification still pending (for the human — needs the real key)
+
+- With the real `MEM0_API_KEY` set, run the **same actor/technique twice**: the second run's
+  Extractor should recall the first analysis (the prepended "recalled from prior analyses"
+  block appears in its grounding). Confirm via the Mem0 dashboard or the `mem0` MCP, and note
+  the observed hosted round-trip latency into the timing table. Run the service with `MODE=dev`
+  + `PORT=8081`/`AGENT_URL` per the Phase-1 operational note.
+
+### General lesson (future projects)
+
+Memory recall/write must be **fail-open and off the critical path**: gate on the key, wrap every
+SDK call in a broad `except` that no-ops, and keep the default test suite offline by neutralizing
+any ambient key in `conftest.py` + injecting a fake SDK module. Also **verify the installed SDK's
+actual signatures** before wiring — the hosted Mem0 client moved entity scoping into `filters`
+(and now *rejects* top-level `user_id`/`app_id` on `search`), which a stale API sketch would miss.

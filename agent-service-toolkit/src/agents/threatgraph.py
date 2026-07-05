@@ -35,6 +35,7 @@ from agents.retrieval import CONTEXT_K, retrieve_attack_context
 from agents.safeguard import Safeguard, SafeguardOutput, SafetyAssessment
 from agents.utils import CustomData
 from core import get_model, settings
+from memory.mem0_client import recall, remember
 from schema.schema import DefenseConfig, ExtractedMechanics
 
 logger = logging.getLogger(__name__)
@@ -278,6 +279,21 @@ def _format_context(attack_context: list[dict[str, Any]]) -> str:
     return "\n".join(lines)
 
 
+def _format_memories(memories: list[dict[str, Any]]) -> str:
+    """Render recalled Mem0 memories as bullet lines for the extractor's grounding.
+
+    Mem0 v3 search results carry the fact text under ``memory`` (older shapes use ``text``).
+    Returns an empty string when there is nothing to recall (Mem0 disabled / no hits) so the
+    prompt is byte-for-byte unchanged in the fail-open case.
+    """
+    lines = []
+    for m in memories:
+        text = (m.get("memory") or m.get("text") or "").strip()
+        if text:
+            lines.append(f"- {text}")
+    return "\n".join(lines)
+
+
 def _mechanics_from_context(attack_context: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Deterministic fallback: derive ordered mechanics straight from retrieved context.
 
@@ -312,19 +328,31 @@ async def extractor(state: ThreatGraphState, config: RunnableConfig) -> ThreatGr
     canonicalizing technique ids to the ``Txxxx`` ids present in the retrieved context. The
     internal LLM call is tagged ``skip_stream`` so its tokens never reach the user. Fails
     open to a deterministic context-derived extraction (mirrors ``Safeguard``).
+
+    Phase 4: PREPENDS hosted-Mem0 (v3) recall of prior analyses to the grounding before the
+    structured extraction, so a repeated actor/technique carries context forward. Recall is
+    fail-open (``[]`` when Mem0 is disabled), leaving the prompt unchanged in that case.
     """
     attack_context = state.get("attack_context") or CANNED_ATTACK_CONTEXT
     raw_text = state.get("raw_text") or _latest_user_text(state["messages"])
     canonical = {c.get("id") for c in attack_context if c.get("id")}
+
+    # Prepend recalled prior-analysis facts (fail-open: [] when Mem0 is disabled).
+    memory_block = _format_memories(recall(raw_text))
 
     try:
         model = get_model(config["configurable"].get("model", settings.DEFAULT_MODEL))
         structured = model.with_structured_output(ExtractedMechanics).with_config(
             tags=["skip_stream"]
         )
-        system = SystemMessage(
-            content=EXTRACTOR_INSTRUCTIONS.format(context=_format_context(attack_context))
-        )
+        system_content = EXTRACTOR_INSTRUCTIONS.format(context=_format_context(attack_context))
+        if memory_block:
+            system_content = (
+                "Relevant facts recalled from prior threat-intel analyses (use as context, "
+                "but ground every technique in the retrieved ATT&CK context below):\n"
+                f"{memory_block}\n\n"
+            ) + system_content
+        system = SystemMessage(content=system_content)
         result = await structured.ainvoke([system, HumanMessage(content=raw_text)], config)
         techniques = result.techniques if isinstance(result, ExtractedMechanics) else []
         # Canonicalize: keep only techniques grounded in the retrieved context.
@@ -523,6 +551,35 @@ async def _synthesize_defense(
     return _deterministic_defense(pairs)
 
 
+def _analysis_turn(
+    raw_text: str, mechanics: list[dict[str, Any]], defense_config: list[dict[str, Any]]
+) -> list[dict[str, str]]:
+    """Build the user+assistant message turn written to Mem0 after synthesis.
+
+    Summarizes the salient facts of this analysis — the extracted ATT&CK techniques and the
+    recommended mitigations — so a later run over the same actor/technique recalls it. The
+    hosted v3 platform auto-extracts facts and builds graph memory from this turn (DQ4).
+    """
+    techniques = ", ".join(
+        f"{m.get('technique_id')} ({m.get('name')})"
+        for m in mechanics
+        if m.get("technique_id")
+    )
+    mitigations = ", ".join(
+        f"{d.get('mitigation_id')} counters {d.get('technique_id')}"
+        for d in defense_config
+        if d.get("mitigation_id")
+    )
+    summary = (
+        "ThreatGraph analysis. Extracted ATT&CK techniques: "
+        f"{techniques or 'none'}. Recommended mitigations: {mitigations or 'none'}."
+    )
+    return [
+        {"role": "user", "content": raw_text or "(threat-intel submission)"},
+        {"role": "assistant", "content": summary},
+    ]
+
+
 async def defensive_guardrail(
     state: ThreatGraphState, config: RunnableConfig
 ) -> ThreatGraphState:
@@ -533,6 +590,9 @@ async def defensive_guardrail(
     (:func:`agents.guardrails.validate_defense_config`, fail-open), and attaches the validated
     config to the terminal ``custom`` ``ChatMessage`` payload. Fails open to the canned config
     only if no grounded pairs are available at all.
+
+    Phase 4: after synthesis, writes the analysis turn to hosted Mem0 (v3) via
+    :func:`memory.mem0_client.remember` — fail-open no-op when Mem0 is disabled.
     """
     mechanics = state.get("mechanics") or CANNED_MECHANICS
     attack_context = state.get("attack_context") or CANNED_ATTACK_CONTEXT
@@ -546,6 +606,10 @@ async def defensive_guardrail(
     # Guardrails AI structural validation (fail-open) of the synthesized config.
     validated = validate_defense_config(synthesized)
     defense_config = [d.model_dump() for d in validated.defenses] or synthesized
+
+    # Write the analysis turn to Mem0 (fail-open no-op when disabled) so future runs recall it.
+    raw_text = state.get("raw_text") or _latest_user_text(state.get("messages") or [])
+    remember(_analysis_turn(raw_text, mechanics, defense_config))
 
     payload = {
         "mechanics": mechanics,
