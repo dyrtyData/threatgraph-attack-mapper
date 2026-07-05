@@ -582,3 +582,33 @@ SDK call in a broad `except` that no-ops, and keep the default test suite offlin
 any ambient key in `conftest.py` + injecting a fake SDK module. Also **verify the installed SDK's
 actual signatures** before wiring — the hosted Mem0 client moved entity scoping into `filters`
 (and now *rejects* top-level `user_id`/`app_id` on `search`), which a stale API sketch would miss.
+
+### Enhancement — surface recalled memories in the UI (recall was invisible)
+
+As first built, Phase-4 recall was **invisible**: `extractor` called `recall(raw_text)` and fed
+the result **only** into its internal grounding prompt (`_format_memories(...)` → prepended
+block). The recalled facts never reached `custom_data`, so the Streamlit UI couldn't show *what*
+memory influenced a run — the behavior was real but un-demonstrable and hard to debug.
+
+Fix — surface `recalled_memories` end-to-end:
+
+- **`src/agents/threatgraph.py`** — added `recalled_memories: list[dict]` to `ThreatGraphState`
+  (`total=False`). `extractor` now captures the raw `recall(raw_text)` list (still renders it into
+  the grounding block exactly as before) and returns it on state from **both** its structured-path
+  and fail-open return points. `defensive_guardrail` adds `custom_data["recalled_memories"] =
+  state.get("recalled_memories", [])` to the terminal payload — mechanics / mermaid / defense_config
+  unchanged. Fail-open preserved: empty list when Mem0 is disabled / no hits.
+- **`src/streamlit_app.py`** — new `draw_recalled_memories(...)` renders a
+  "🧠 Recalled from prior analyses (N)" expander above the attack graph, listing each memory
+  defensively (`m.get("memory") or m.get("text")`, optional `score`). When empty it shows a subtle
+  "No prior memories recalled (first run or memory disabled)" caption.
+- **Tests** — `test_threatgraph.py` benign end-to-end now asserts the `recalled_memories` key is
+  present in `custom_data` and is `[]` on the default offline path; `test_streamlit_app.py`'s
+  custom-message test now includes a non-empty `recalled_memories` entry so the panel's populated
+  branch is exercised. Full suite: **159 passed, 3 skipped**; `ruff check` clean on changed files.
+
+**General lesson (future projects):** when a memory/RAG layer silently influences an agent's
+output, **surface *what* was recalled in the UI** — expose the retrieved items through the same
+output payload the UI already consumes. Otherwise the behavior is untraceable: you can't tell a
+"recall did nothing" run from a "recall fed in the wrong facts" run. Make the influence visible so
+it is demonstrable and debuggable, not just internal.

@@ -70,6 +70,7 @@ class ThreatGraphState(MessagesState, total=False):
     raw_text: str  # unstructured threat-intel input
     safety: SafeguardOutput  # reuse existing input gate
     attack_context: list[dict]  # retrieved ATT&CK techniques + mitigations
+    recalled_memories: list[dict]  # hosted-Mem0 recall of prior analyses (Phase 4, UI-visible)
     mechanics: list[dict]  # ordered techniques w/ tactic, id, evidence
     mermaid: str  # Mermaid attack-graph string
     defense_config: list[dict]  # synthesized, (Phase 3) guardrail-validated defense config
@@ -331,14 +332,18 @@ async def extractor(state: ThreatGraphState, config: RunnableConfig) -> ThreatGr
 
     Phase 4: PREPENDS hosted-Mem0 (v3) recall of prior analyses to the grounding before the
     structured extraction, so a repeated actor/technique carries context forward. Recall is
-    fail-open (``[]`` when Mem0 is disabled), leaving the prompt unchanged in that case.
+    fail-open (``[]`` when Mem0 is disabled), leaving the prompt unchanged in that case. The
+    recalled memories are also surfaced on state (``recalled_memories``) so the terminal node
+    can expose them through ``custom_data`` for the UI — recall is no longer silent/internal.
     """
     attack_context = state.get("attack_context") or CANNED_ATTACK_CONTEXT
     raw_text = state.get("raw_text") or _latest_user_text(state["messages"])
     canonical = {c.get("id") for c in attack_context if c.get("id")}
 
-    # Prepend recalled prior-analysis facts (fail-open: [] when Mem0 is disabled).
-    memory_block = _format_memories(recall(raw_text))
+    # Recall prior-analysis facts (fail-open: [] when Mem0 is disabled). Keep the raw list so
+    # it can be surfaced to the UI, and also render it into the extractor's grounding block.
+    recalled_memories = recall(raw_text)
+    memory_block = _format_memories(recalled_memories)
 
     try:
         model = get_model(config["configurable"].get("model", settings.DEFAULT_MODEL))
@@ -359,12 +364,15 @@ async def extractor(state: ThreatGraphState, config: RunnableConfig) -> ThreatGr
         grounded = [t for t in techniques if t.technique_id in canonical]
         mechanics = [t.model_dump() for t in (grounded or techniques)]
         if mechanics:
-            return {"mechanics": mechanics}
+            return {"mechanics": mechanics, "recalled_memories": recalled_memories}
         logger.warning("Structured extraction returned no grounded techniques; using fallback.")
     except Exception as exc:  # noqa: BLE001 — fail open to deterministic extraction
         logger.warning("Structured extraction failed (%s); using context-derived fallback.", exc)
 
-    return {"mechanics": _mechanics_from_context(attack_context)}
+    return {
+        "mechanics": _mechanics_from_context(attack_context),
+        "recalled_memories": recalled_memories,
+    }
 
 
 def _sanitize_node_id(technique_id: str) -> str:
@@ -615,6 +623,9 @@ async def defensive_guardrail(
         "mechanics": mechanics,
         "mermaid": state.get("mermaid", CANNED_MERMAID),
         "defense_config": defense_config,
+        # Surface what Mem0 recalled (fail-open []: empty when disabled / no hits) so the UI
+        # can show WHICH prior analyses influenced this run — recall is no longer invisible.
+        "recalled_memories": state.get("recalled_memories", []),
     }
     custom_message = CustomData(data=payload).to_langchain()
     return {"defense_config": defense_config, "messages": [custom_message]}

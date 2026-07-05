@@ -345,8 +345,33 @@ def render_mermaid(code: str, height: int = 500) -> None:
     components.html(html, height=height, scrolling=True)
 
 
+def draw_recalled_memories(recalled_memories: list) -> None:
+    """Render the hosted-Mem0 memories recalled for this run (Phase 4 — makes recall visible).
+
+    Each memory is a dict from the Mem0 v3 search results; be defensive about its shape
+    (``memory`` on v3, ``text`` on older shapes; optional ``score``). Shows a subtle caption
+    when nothing was recalled (first run / Mem0 disabled) so the behavior stays demonstrable.
+    """
+    if not recalled_memories:
+        st.caption("🧠 No prior memories recalled (first run or memory disabled).")
+        return
+    with st.expander(f"🧠 Recalled from prior analyses ({len(recalled_memories)})", expanded=True):
+        for m in recalled_memories:
+            if not isinstance(m, dict):
+                st.markdown(f"- {m}")
+                continue
+            text = (m.get("memory") or m.get("text") or "").strip() or "(empty memory)"
+            score = m.get("score")
+            if isinstance(score, (int, float)):
+                st.markdown(f"- {text}  \n  _relevance: {score:.3f}_")
+            else:
+                st.markdown(f"- {text}")
+
+
 def draw_threatgraph_output(custom_data: dict) -> None:
-    """Render a `threatgraph` custom message: Mermaid attack graph + defense config."""
+    """Render a `threatgraph` custom message: recalled memories + Mermaid graph + defenses."""
+    draw_recalled_memories(custom_data.get("recalled_memories") or [])
+
     mermaid_code = custom_data.get("mermaid", "")
     st.markdown("#### 🗺️ Attack graph")
     if mermaid_code:

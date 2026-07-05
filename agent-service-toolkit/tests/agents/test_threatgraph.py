@@ -129,6 +129,12 @@ async def test_threatgraph_benign_populates_output(monkeypatch):
     assert payload["mechanics"] == result["mechanics"]
     assert payload["defense_config"] == result["defense_config"]
 
+    # Phase 4 enhancement: recalled Mem0 memories are surfaced through custom_data for the UI.
+    # Offline (Mem0 disabled) this is fail-open [], but the key must always be present.
+    assert "recalled_memories" in payload
+    assert payload["recalled_memories"] == []
+    assert result.get("recalled_memories") == []
+
 
 @pytest.mark.asyncio
 async def test_extractor_structured_path_canonicalizes(monkeypatch):

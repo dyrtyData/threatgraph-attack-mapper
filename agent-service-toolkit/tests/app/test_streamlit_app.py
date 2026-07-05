@@ -155,6 +155,9 @@ async def test_app_threatgraph_custom_mermaid(mock_agent_client):
         content="",
         custom_data={
             "mermaid": "graph TD\n    A[Initial Access] --> B[Execution]\n    B --> C[Impact]\n",
+            "recalled_memories": [
+                {"memory": "Prior spearphishing incident used PowerShell downloader.", "score": 0.82}
+            ],
             "mechanics": [
                 {
                     "tactic": "Initial Access",
