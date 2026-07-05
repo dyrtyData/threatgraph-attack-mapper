@@ -96,7 +96,7 @@ Filled in by later phases (dry-run deliverable — informs the live-run cut list
 | Langfuse experiment run | 2m09s (129s) wall-clock | Phase 5 — offline harness + evaluators built & tested (10 tests). Live `run_experiment.py` on 2026-07-05: dataset upsert + 5-item experiment over the real graph (hybrid RAG + cross-encoder reranker + guardrails + LLM extraction). `cross-encoder/ms-marco-MiniLM-L6-v2` (~88MB) was already HF-cached, so no download occurred this run (add ~download time on a cold cache). |
 | Streamlit UI build | ~20 min (Phase 1 skeleton) | Phase 1/3 — custom-message branch + Mermaid renderer w/ CDN fallback |
 | Vite + React + Tailwind client build | **2.86 s** (`npm run build`, wall-clock) | Phase 6 — `tsc -b && vite build`; Vite 8 + `@tailwindcss/vite` v4 + mermaid 11; node v22.23.1. `npm install` ~30 s (244 pkgs, one-time). `npm run test` (vitest) 5 tests ~1.3 s. |
-| Open WebUI wiring | _tbd_ | Phase 7 |
+| Open WebUI wiring | **~5 min** (image run → healthy in ~20s; pipe + docs authored) | Phase 7 — official `ghcr.io/open-webui/open-webui:main` on :3000; Pipe function calls `host.docker.internal:8081/threatgraph/stream`. Server-side call → no CORS needed. |
 
 ---
 
@@ -898,3 +898,32 @@ any auth dependency), or every call dies as "Failed to fetch"; (2) a **token str
 that works from the browser** — a server-side client can hold the secret quietly, but a
 browser must either talk to an auth-disabled dev service or be given the bearer token via
 build-time env (`VITE_*`). Wire both when adding any browser frontend to an authed API.
+
+---
+
+## 2026-07-05 — Phase 7: Open WebUI wired to the FastAPI endpoint (third UI)
+
+Connected **Open WebUI** (official Docker image, git-ignored / run in place) to the same
+FastAPI backend as the Streamlit and React clients, so a third UI can drive the
+`threatgraph` agent. **No Open WebUI source is committed** — only the integration docs.
+
+### Built (committed)
+- **`docs/OpenWebUI.md`** — run/wire steps: `docker run … ghcr.io/open-webui/open-webui:main`
+  on `:3000`, create the local admin, add the Pipe function, set Valves, pick the model, query.
+- **`docs/openwebui_threatgraph_pipe.py`** — an Open WebUI **Pipe function** (integration glue,
+  not OWUI source): POSTs to `/threatgraph/stream`, parses the SSE, and renders the terminal
+  `custom_data` (mermaid + recalled_memories + mechanics + defense_config) as markdown with a
+  ```mermaid fenced block (OWUI renders it). Bearer token via a `AUTH_TOKEN` Valve.
+
+### Verified
+- Container up and healthy on `:3000`; sign-in page loads (assistant confirmed via browser).
+- Full account-signup + function-paste + live query is the human's hands-on step (external app;
+  the pipe + docs are ready to paste). The service call is **server-side from the OWUI backend**,
+  so unlike the React client this path needs **no CORS** and the token-in-Valve is not exposed to
+  a browser.
+
+### Lesson for future projects
+Connecting Open WebUI to a custom (non-OpenAI-compatible) backend is done with a **Pipe
+function** that registers a pseudo-model and returns markdown; render diagrams by emitting a
+fenced ```mermaid block. From a container, reach host services via `host.docker.internal`, and
+keep the OWUI clone/image git-ignored (commit only the pipe + docs).
