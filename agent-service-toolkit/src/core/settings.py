@@ -58,6 +58,20 @@ class LogLevel(StrEnum):
         return mapping[self]
 
 
+def _parse_cors_origins(x: Any) -> list[str]:
+    """Accept a list, a JSON array string, or a comma-separated string of origins."""
+    if x is None or x == "":
+        return []
+    if isinstance(x, list):
+        return [str(i).strip() for i in x if str(i).strip()]
+    if isinstance(x, str):
+        s = x.strip()
+        if s.startswith("["):
+            return [str(i).strip() for i in loads(s) if str(i).strip()]
+        return [part.strip() for part in s.split(",") if part.strip()]
+    return list(x)
+
+
 def check_str_is_http(x: str) -> str:
     http_url_adapter = TypeAdapter(HttpUrl)
     return str(http_url_adapter.validate_python(x))
@@ -79,6 +93,19 @@ class Settings(BaseSettings):
     LOG_LEVEL: LogLevel = LogLevel.WARNING
 
     AUTH_SECRET: SecretStr | None = None
+
+    # CORS: browser clients (e.g. the Vite React app) make cross-origin requests
+    # to this service and require Access-Control-Allow-Origin headers, or the
+    # browser blocks the response ("Failed to fetch"). Server-side clients
+    # (Streamlit, the Python AgentClient) are unaffected. Accepts a JSON list or
+    # a comma-separated string via env, e.g. CORS_ALLOW_ORIGINS='["https://app"]'
+    # or CORS_ALLOW_ORIGINS=http://a,http://b. Defaults cover the Vite dev server.
+    CORS_ALLOW_ORIGINS: Annotated[list[str], BeforeValidator(_parse_cors_origins)] = Field(
+        default_factory=lambda: [
+            "http://localhost:5173",
+            "http://127.0.0.1:5173",
+        ]
+    )
 
     OPENAI_API_KEY: SecretStr | None = None
     DEEPSEEK_API_KEY: SecretStr | None = None

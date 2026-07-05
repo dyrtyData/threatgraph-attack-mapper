@@ -835,3 +835,51 @@ Mermaid attack graph + validated defense config.
 
 - `npm run dev`, submit a snippet, compare the rendered Mermaid graph + defense config to the
   Streamlit output (backend on `PORT=8081`).
+
+## 2026-07-05 — Phase 6 fix: browser "Failed to fetch" → server CORS + auth-for-browser
+
+**Symptom.** The new React client (Vite dev server, `http://localhost:5173`) showed
+"Failed to fetch" on Analyze, which POSTs to `http://localhost:8081/threatgraph/stream`.
+Streamlit against the *same* backend worked fine.
+
+**Root cause (confirmed empirically).**
+1. **No CORS on the FastAPI service.** A browser cross-origin POST from `:5173` to
+   `:8081` first issues an `OPTIONS` preflight. Before the fix that returned
+   `405 Method Not Allowed` with **no** `Access-Control-Allow-Origin`, so the browser
+   blocked the request — surfacing as the generic `TypeError: Failed to fetch`.
+   Streamlit is unaffected because it calls the backend **server-side** (httpx, no
+   browser, no same-origin policy).
+2. **Auth was also on.** The repo-root `.env` sets `AUTH_SECRET`, which `settings`
+   loads via `find_dotenv`, so `verify_bearer` was active; an unauthenticated POST
+   returned `401`. (Secondary to the CORS block, but would bite next.)
+
+**Fix.**
+- Added `fastapi.middleware.cors.CORSMiddleware` to the **app** (not the router) in
+  `src/service/service.py`, so the preflight is answered before the bearer dependency.
+- Added `CORS_ALLOW_ORIGINS` to `src/core/settings.py` (JSON-array **or**
+  comma-separated string via a `BeforeValidator`), defaulting to the Vite dev origins
+  `http://localhost:5173` and `http://127.0.0.1:5173`. `allow_methods=["*"]`,
+  `allow_headers=["*"]`, `allow_credentials=True`.
+- Auth-for-browser: `frontend/src/api/stream.ts` already sends
+  `Authorization: Bearer <VITE_AGENT_TOKEN>` when set (verified, no change needed).
+  Documented both paths in `frontend/.env.example` + README, recommending the smoothest
+  default for local dev: start the service with `AUTH_SECRET=` (auth off) — or set
+  `VITE_AGENT_TOKEN` to match the service's `AUTH_SECRET`.
+
+**Verification (curl, before → after).**
+- `OPTIONS /threatgraph/stream` (Origin `:5173`): `405`, no CORS header → **`200`** with
+  `access-control-allow-origin: http://localhost:5173`.
+- `POST` unauthenticated: `401` (no CORS) → `401` **with** CORS headers (browser now sees
+  the real response instead of a network error).
+- `POST` with valid bearer: passes auth (`422` model-validation only, i.e. auth OK) with
+  CORS headers present.
+- `uv run pytest -q`: **170 passed, 3 skipped** (added a CORS-preflight test in
+  `tests/service/test_auth.py`).
+
+**General lesson (future projects).** A browser client needs two things a server-side
+client (Streamlit, Python `AgentClient`) never does: (1) **server CORS** — the backend
+must return `Access-Control-Allow-Origin` (and answer the `OPTIONS` preflight *before*
+any auth dependency), or every call dies as "Failed to fetch"; (2) a **token strategy
+that works from the browser** — a server-side client can hold the secret quietly, but a
+browser must either talk to an auth-disabled dev service or be given the bearer token via
+build-time env (`VITE_*`). Wire both when adding any browser frontend to an authed API.

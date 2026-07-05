@@ -40,3 +40,20 @@ def test_auth_secret_incorrect(mock_settings, mock_agent, test_client):
     # Should also reject requests with no auth header
     response = test_client.post("/invoke", json={"message": "test"})
     assert response.status_code == 401
+
+
+def test_cors_preflight_allows_configured_origin(test_client):
+    """The CORS preflight (OPTIONS) must be answered by middleware before the
+    bearer dependency, returning Access-Control-Allow-Origin. Without this a
+    browser cross-origin POST fails as "Failed to fetch"."""
+    origin = "http://localhost:5173"
+    response = test_client.options(
+        "/threatgraph/stream",
+        headers={
+            "Origin": origin,
+            "Access-Control-Request-Method": "POST",
+            "Access-Control-Request-Headers": "authorization,content-type",
+        },
+    )
+    assert response.status_code == 200
+    assert response.headers.get("access-control-allow-origin") == origin

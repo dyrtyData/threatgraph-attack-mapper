@@ -205,12 +205,18 @@ FastAPI `POST /threatgraph/stream` SSE endpoint (via `fetch` +
 `response.body.getReader()`) and renders the Mermaid attack graph plus the
 validated defense configuration.
 
-1. Start the FastAPI server (the client's default backend is `http://localhost:8081`):
+1. Start the FastAPI server (the client's default backend is `http://localhost:8081`).
+   For the smoothest local browser demo, start it with auth **disabled** so no
+   token is needed (the repo-root `.env` otherwise sets `AUTH_SECRET`, which turns
+   bearer auth on):
 
    ```sh
    # from agent-service-toolkit/
-   PORT=8081 python src/run_service.py
+   AUTH_SECRET= PORT=8081 python src/run_service.py
    ```
+
+   Prefer to keep auth on? Leave `AUTH_SECRET` set and give the browser the token
+   via `VITE_AGENT_TOKEN` (see step 4).
 
 2. In a separate terminal, install and run the client:
 
@@ -230,8 +236,19 @@ validated defense configuration.
 **Configuration.** The backend base URL is set via the `VITE_AGENT_URL`
 environment variable (default `http://localhost:8081`). Copy `frontend/.env.example`
 to `frontend/.env` to override it, e.g. `VITE_AGENT_URL=http://localhost:8081`. If the
-service is started with an `AUTH_SECRET`, set `VITE_AGENT_TOKEN` to the bearer token;
-locally, with `AUTH_SECRET` unset, no token is required.
+service is started with an `AUTH_SECRET`, set `VITE_AGENT_TOKEN` to the same value so
+the browser sends `Authorization: Bearer <token>`; locally, with `AUTH_SECRET` unset,
+no token is required.
+
+**CORS (browser clients).** Unlike the server-side Streamlit app and the Python
+`AgentClient`, a browser client makes a *cross-origin* request (from
+`http://localhost:5173` to `http://localhost:8081`) and needs the service to return
+CORS headers — otherwise the browser blocks the response and the client reports
+"Failed to fetch". The service adds FastAPI's `CORSMiddleware`, allowing the Vite dev
+origins by default. To serve the client from a different origin, set
+`CORS_ALLOW_ORIGINS` on the service (a JSON array or a comma-separated string), e.g.
+`CORS_ALLOW_ORIGINS='["https://myapp.example"]'` or
+`CORS_ALLOW_ORIGINS=http://localhost:5173,http://127.0.0.1:5173`.
 
 > `frontend/node_modules/` and `frontend/dist/` are git-ignored; only source and
 > `package-lock.json` are committed.
