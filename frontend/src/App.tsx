@@ -17,13 +17,17 @@ export default function App() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<ThreatGraphData | null>(null);
+  const [finalText, setFinalText] = useState<string | null>(null);
+  const [submitted, setSubmitted] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
 
   async function handleSubmit() {
     if (!text.trim() || loading) return;
     setLoading(true);
+    setSubmitted(true);
     setError(null);
     setResult(null);
+    setFinalText(null);
 
     const controller = new AbortController();
     abortRef.current = controller;
@@ -34,6 +38,7 @@ export default function App() {
         streamTokens: false,
         signal: controller.signal,
         onThreatGraph: (data) => setResult(data),
+        onFinalText: (t) => setFinalText(t),
         onError: (msg) => setError(msg),
       });
     } catch (e) {
@@ -127,6 +132,30 @@ export default function App() {
               />
             </section>
           </div>
+        )}
+
+        {/* Blocked / plain-text agent response: the terminal message carried no
+            graph custom_data (e.g. the Safeguard input gate refused the input,
+            or the agent replied in prose). Surface it instead of a blank screen. */}
+        {!result && finalText && (
+          <section
+            data-testid="agent-response"
+            className="rounded-md border border-amber-300 bg-amber-50 p-4"
+          >
+            <h2 className="mb-2 text-lg font-semibold text-amber-900">
+              🛡️ Agent response
+            </h2>
+            <p className="whitespace-pre-wrap text-sm text-amber-900">
+              {finalText}
+            </p>
+          </section>
+        )}
+
+        {/* Nothing at all came back — make the empty state explicit. */}
+        {submitted && !loading && !error && !result && !finalText && (
+          <p className="text-sm text-slate-500">
+            No response was returned by the agent.
+          </p>
         )}
       </div>
     </div>

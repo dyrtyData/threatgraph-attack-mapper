@@ -58,6 +58,15 @@ export interface StreamHandlers {
   onMessage?: (message: ChatMessage) => void;
   /** The terminal `custom` threatgraph payload (mermaid + defenses + memories). */
   onThreatGraph?: (data: ThreatGraphData) => void;
+  /**
+   * The terminal plain-text agent message, surfaced ONLY when the stream ends
+   * WITHOUT a graph payload. This is the happy-path's counterpart for blocked
+   * inputs: when the input safety gate (guard_input → block_unsafe_content)
+   * refuses an unsafe/prompt-injection input, the terminal message is a normal
+   * `ai` ChatMessage with plain-text refusal content and no `mermaid`
+   * custom_data. Falls back to token-streamed text if that's all that arrived.
+   */
+  onFinalText?: (text: string) => void;
   /** A server-emitted error frame. */
   onError?: (error: string) => void;
 }
@@ -149,6 +158,7 @@ export async function streamThreatGraph(opts: StreamOptions): Promise<void> {
     onToken,
     onMessage,
     onThreatGraph,
+    onFinalText,
     onError,
   } = opts;
 
@@ -189,6 +199,45 @@ export async function streamThreatGraph(opts: StreamOptions): Promise<void> {
   const decoder = new TextDecoder();
   let buffer = "";
 
+  // Track terminal plain-text output for the "blocked / no-graph" path.
+  let sawGraph = false;
+  let lastPlainText = "";
+  let tokenBuffer = "";
+
+  /**
+   * At stream end, if no graph payload was produced, surface the most recent
+   * plain-text message (e.g. a Safeguard refusal), falling back to any
+   * token-streamed text. Never fires on the happy path (graph seen).
+   */
+  const finalize = (): void => {
+    if (sawGraph) return;
+    const text = lastPlainText || tokenBuffer;
+    if (text) onFinalText?.(text);
+  };
+
+  // Route a single parsed frame; returns true if the stream should terminate.
+  const handle = (
+    parsed: NonNullable<ReturnType<typeof parseFrame>>,
+  ): boolean => {
+    if (parsed.kind === "done") return true;
+    if (parsed.kind === "token") {
+      tokenBuffer += parsed.content;
+      onToken?.(parsed.content);
+    } else if (parsed.kind === "error") {
+      onError?.(parsed.content);
+    } else if (parsed.kind === "message") {
+      onMessage?.(parsed.content);
+      if (isThreatGraphMessage(parsed.content)) {
+        sawGraph = true;
+        onThreatGraph?.(extractThreatGraphData(parsed.content));
+      } else if (typeof parsed.content.content === "string" && parsed.content.content.trim()) {
+        // A plain (non-graph) message — keep the latest as the terminal text.
+        lastPlainText = parsed.content.content;
+      }
+    }
+    return false;
+  };
+
   try {
     for (;;) {
       const { value, done } = await reader.read();
@@ -202,16 +251,9 @@ export async function streamThreatGraph(opts: StreamOptions): Promise<void> {
         buffer = buffer.slice(sep + 2);
         const parsed = parseFrame(frame);
         if (!parsed) continue;
-        if (parsed.kind === "done") return;
-        if (parsed.kind === "token") {
-          onToken?.(parsed.content);
-        } else if (parsed.kind === "error") {
-          onError?.(parsed.content);
-        } else if (parsed.kind === "message") {
-          onMessage?.(parsed.content);
-          if (isThreatGraphMessage(parsed.content)) {
-            onThreatGraph?.(extractThreatGraphData(parsed.content));
-          }
+        if (handle(parsed)) {
+          finalize();
+          return;
         }
       }
     }
@@ -220,17 +262,9 @@ export async function streamThreatGraph(opts: StreamOptions): Promise<void> {
     const tail = buffer.trim();
     if (tail) {
       const parsed = parseFrame(tail);
-      if (parsed && parsed.kind !== "done") {
-        if (parsed.kind === "token") onToken?.(parsed.content);
-        else if (parsed.kind === "error") onError?.(parsed.content);
-        else if (parsed.kind === "message") {
-          onMessage?.(parsed.content);
-          if (isThreatGraphMessage(parsed.content)) {
-            onThreatGraph?.(extractThreatGraphData(parsed.content));
-          }
-        }
-      }
+      if (parsed && parsed.kind !== "done") handle(parsed);
     }
+    finalize();
   } finally {
     reader.releaseLock();
   }

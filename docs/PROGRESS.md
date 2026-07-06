@@ -984,10 +984,11 @@ What's written this phase:
   auto-graph, no `enable_graph`/`version="v2"`) documented in the Phase-4 entry.
 - [x] **AC5 — Safety / Guardrails (CORE):** Guardrails-AI Pydantic **output** validation of the
   defense config is active (`src/agents/guardrails.py`), plus a grounded-mitigation hard-filter.
-  **Caveat:** the `Safeguard` prompt-injection **input** gate is wired at `guard_input` but is
-  **fail-open and currently a NO-OP without `GROQ_API_KEY`** (`Safeguard.model = None` → returns
-  `SAFE`). To activate, set `GROQ_API_KEY` and submit a prompt-injection (see
-  `docs/ARCHITECTURE_PILLARS.md` Pillar 6). Tracked in PF-002.
+  The `Safeguard` prompt-injection **input** gate at `guard_input` is now **ACTIVE**
+  (`GROQ_API_KEY` added, Groq `gpt-oss-safeguard-20b`): flagged inputs route to
+  `block_unsafe_content` and the plain-text refusal now renders in all three UIs (see the
+  Phase-9 entry below). Still fail-open if the key is removed (`Safeguard.model = None` →
+  `SAFE`).
 - [x] **AC6 — Hybrid RAG (CORE):** Full dense + BM25 → RRF → cross-encoder rerank over the
   697-record ATT&CK corpus (`src/agents/retrieval.py`), grounding both extraction and defense.
 - [x] **AC7 — Observability:** Langfuse tracing instruments every node automatically via the run
@@ -1003,8 +1004,39 @@ What's written this phase:
 
 ### Still open for the human (non-blocking)
 
-- **Activate the Safeguard input gate** — add `GROQ_API_KEY` to `.env` to flip the wired-but-
-  dormant prompt-injection gate live (AC5 caveat above).
 - **Executive one-pager (MVP-C)** — the one non-technical deliverable, deferred to PF-002.
 - **File PF-002 into Linear** — from `coms/linear_PF-002_threatgraph-followups.md` (this session is
   non-interactive; Linear needs OAuth).
+
+---
+
+## 2026-07-06 — Phase 9: Safeguard input gate ACTIVE + all three UIs surface a block
+
+- **Input gate is now ACTIVE.** `GROQ_API_KEY` added to `.env`, so the `Safeguard`
+  prompt-injection classifier at `guard_input` runs live on Groq's `gpt-oss-safeguard-20b`
+  (previously fail-open / dormant no-op). A flagged input routes `guard_input →
+  block_unsafe_content`, whose terminal message is a **plain `ai` message with a text refusal and
+  no `mermaid` custom_data**. Still fail-open if the key is removed.
+- **A benign input is only blocked if the classifier flags it.** Seeing a full-pipeline run
+  (extractor → graph → defense) simply means the input was classified **SAFE** — that is the
+  expected path for real threat-intel text, not a sign the gate is off.
+- **UI fix — React + Open WebUI now surface the refusal text.** Streamlit already rendered any AI
+  message; the React client and the Open WebUI pipe previously looked **only** for the happy-path
+  graph custom_data, so a block showed nothing (React) / a generic "no graph" line (pipe). Fixed:
+  - `frontend/src/api/stream.ts` — new `onFinalText` handler; the stream now captures the terminal
+    plain-text message (or, as a fallback, accumulated tokens) and emits it at stream end **only
+    when no graph payload was produced**.
+  - `frontend/src/App.tsx` — a `🛡️ Agent response` panel renders that text when there's no graph,
+    plus an explicit "No response" empty state. Happy-path graph + defense rendering unchanged.
+  - `agent-service-toolkit/docs/openwebui_threatgraph_pipe.py` — tracks the last plain message /
+    tokens and returns the refusal (as `### 🛡️ Agent response`) when no `mermaid` custom_data
+    arrived, instead of the generic "No attack graph was produced."
+  - Tests: `frontend/src/api/stream.test.ts` adds a case where the terminal message is a plain AI
+    message (no custom_data) → surfaces as final text, and a guard that the happy path does **not**
+    emit final text. `npm run build` + `npm run test` green (7 tests).
+- **Benign warnings during a run (NOT failures).** The following are expected trace-export /
+  serialization noise and do not indicate a broken run:
+  - Langfuse OTEL `Failed to export span batch … Read timed out (5s)` — trace-export retry;
+    spans are batched/retried out of band and don't affect the response.
+  - Pydantic `'parsed'` serializer warning — serialization noise from the model wrapper.
+  - guardrails deprecation warnings — library-level, cosmetic.

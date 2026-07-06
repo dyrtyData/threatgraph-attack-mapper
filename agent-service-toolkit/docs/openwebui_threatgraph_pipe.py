@@ -77,6 +77,11 @@ class Pipe:
             return f"Could not reach the agent service at {self.valves.AGENT_URL}: {e}"
 
         custom = None
+        # Track the most recent plain-text message so we can surface a refusal.
+        # When the input safety gate (guard_input → block_unsafe_content) blocks
+        # an unsafe/prompt-injection input, the terminal message is a normal `ai`
+        # message with plain-text refusal content and NO mermaid custom_data.
+        last_text = ""
         for line in resp.iter_lines(decode_unicode=True):
             if not line or not line.startswith("data: "):
                 continue
@@ -87,16 +92,28 @@ class Pipe:
                 event = json.loads(data)
             except json.JSONDecodeError:
                 continue
-            if event.get("type") == "message":
+            if event.get("type") == "token":
+                # Accumulate any streamed tokens as a fallback terminal text.
+                last_text += str(event.get("content") or "")
+            elif event.get("type") == "message":
                 msg = event.get("content", {})
                 cdata = msg.get("custom_data") or {}
                 if cdata.get("mermaid"):
                     custom = cdata
+                else:
+                    content = msg.get("content")
+                    if isinstance(content, str) and content.strip():
+                        last_text = content
 
-        if not custom:
-            return "No attack graph was produced for that input."
+        if custom:
+            return self._render_markdown(custom)
 
-        return self._render_markdown(custom)
+        # No graph — surface the terminal plain-text message (e.g. Safeguard
+        # refusal) instead of a generic "no graph" line.
+        if last_text.strip():
+            return "### 🛡️ Agent response\n\n" + last_text.strip()
+
+        return "No attack graph was produced for that input."
 
     @staticmethod
     def _render_markdown(custom: dict) -> str:

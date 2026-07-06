@@ -64,6 +64,61 @@ describe("streamThreatGraph", () => {
     });
   });
 
+  it("surfaces a plain AI terminal message (no custom_data) as final text", async () => {
+    // Simulates the input safety gate (block_unsafe_content) refusing an unsafe
+    // input: the terminal message is a normal `ai` message with plain-text
+    // refusal content and NO mermaid custom_data.
+    const refusal: ChatMessage = {
+      type: "ai",
+      content:
+        "I can't help with that request. The submitted text was flagged as unsafe.",
+    };
+
+    const frames = [
+      `data: ${JSON.stringify({ type: "message", content: refusal })}\n\n`,
+      "data: [DONE]\n\n",
+    ];
+
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(sseResponse(frames));
+
+    let finalText: string | null = null;
+    let graphData: unknown = null;
+
+    await streamThreatGraph({
+      message: "unsafe input",
+      onThreatGraph: (d) => (graphData = d),
+      onFinalText: (t) => (finalText = t),
+    });
+
+    expect(graphData).toBeNull();
+    expect(finalText).toBe(
+      "I can't help with that request. The submitted text was flagged as unsafe.",
+    );
+  });
+
+  it("does NOT emit final text on the happy path (graph produced)", async () => {
+    const custom: ChatMessage = {
+      type: "custom",
+      content: "",
+      custom_data: { mermaid: "graph TD; A-->B;", mechanics: [], defense_config: [], recalled_memories: [] },
+    };
+    const frames = [
+      `data: ${JSON.stringify({ type: "message", content: custom })}\n\n`,
+      "data: [DONE]\n\n",
+    ];
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(sseResponse(frames));
+
+    let finalText: string | null = null;
+    let graphData: unknown = null;
+    await streamThreatGraph({
+      message: "safe input",
+      onThreatGraph: (d) => (graphData = d),
+      onFinalText: (t) => (finalText = t),
+    });
+    expect(graphData).not.toBeNull();
+    expect(finalText).toBeNull();
+  });
+
   it("surfaces server error frames", async () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValue(
       sseResponse(['data: {"type":"error","content":"boom"}\n\n', "data: [DONE]\n\n"]),
