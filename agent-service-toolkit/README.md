@@ -11,6 +11,45 @@ This project offers a template for you to easily build and run your own agents u
 
 **[🎥 Watch a video walkthrough of the repo and app](https://www.youtube.com/watch?v=pdYVHw_YCNY)**
 
+---
+
+## 🛰️ ThreatGraph (PF-001) — the multi-agent pipeline built on this toolkit
+
+This repo hosts **ThreatGraph**, a registered `threatgraph` LangGraph agent that ingests
+unstructured threat-intelligence text and emits (a) a Mermaid.js attack graph of the attacker's
+kill-chain and (b) a structurally validated defensive configuration, grounded in hybrid RAG over
+the full MITRE ATT&CK corpus, remembered via hosted Mem0, and traced + evaluated in Langfuse.
+
+- **Architecture pillars** → how ThreatGraph maps to the 7 fundamental multi-agent architecture
+  pillars (+ MVP standards), with concrete `file:path` references and per-pillar demo notes:
+  see [`docs/ARCHITECTURE_PILLARS.md`](docs/ARCHITECTURE_PILLARS.md).
+- **Build journey + operational lessons + timing table** → [`PROGRESS.md`](PROGRESS.md).
+
+### Run all surfaces
+
+All UIs talk to the **same** FastAPI backend. Start it once (from `agent-service-toolkit/`):
+
+```sh
+# MODE=dev enables auto-reload (the service does NOT reload by default);
+# PORT=8081 avoids a common :8080 collision. Prefix everything with `uv run`
+# (bare `python` uses the wrong interpreter and fails on missing deps).
+MODE=dev PORT=8081 uv run python src/run_service.py
+```
+
+Then pick a UI / task:
+
+| Surface | Command | Notes |
+| --- | --- | --- |
+| **Streamlit** (fast/dev path) | `AGENT_URL=http://localhost:8081 uv run streamlit run src/streamlit_app.py` | Defaults the agent selector to `threatgraph`; shows the recalled-memories panel. |
+| **React client** (polished) | `cd ../frontend && npm ci && npm run dev` (`http://localhost:5173`) | POST-SSE; see the React section below for the `frontend/.env` token note + CORS. |
+| **Open WebUI** (third UI) | see [`docs/OpenWebUI.md`](docs/OpenWebUI.md) | Pipe function POSTs to `/threatgraph/stream`; server-side call, no CORS needed. |
+| **Evals harness** | `uv run --env-file ../.env python evals/run_experiment.py` | Langfuse dataset + experiment + SDK evaluators (`--env-file` so keys reach `os.environ`). |
+
+> **Tracing is off by default:** set `LANGFUSE_TRACING=true` in `.env` (keys alone do NOT turn
+> tracing on) and restart the service to emit the per-node span tree.
+
+---
+
 ## Overview
 
 ### [Try the app!](https://agent-service-toolkit.streamlit.app/)

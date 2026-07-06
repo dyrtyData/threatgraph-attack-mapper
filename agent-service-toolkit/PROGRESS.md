@@ -927,3 +927,84 @@ Connecting Open WebUI to a custom (non-OpenAI-compatible) backend is done with a
 function** that registers a pseudo-model and returns markdown; render diagrams by emitting a
 fenced ```mermaid block. From a container, reach host services via `host.docker.internal`, and
 keep the OWUI clone/image git-ignored (commit only the pipe + docs).
+
+---
+
+## 2026-07-06 — Phase 8: PF-002 backlog handoff + final verification (sprint close)
+
+The journey closes where it began — inside the absorbed `agent-service-toolkit/` base, one
+public repo, honest incremental history. Over Phases 0→7 the `threatgraph` agent grew from a
+canned walking skeleton into a full multi-agent pipeline exercising all seven architectural
+pillars: LangGraph orchestration (`guard_input → retrieve → extractor → graph_architect →
+defensive_guardrail`), hybrid RAG over the full **697-record** MITRE ATT&CK corpus (BM25 + dense
+→ RRF → cross-encoder rerank, with the multi-technique-diversity tuning pass that made
+enumerate-then-ground work), Guardrails-AI Pydantic output validation + a grounded-mitigation
+hard-filter, hosted Mem0 v3 recall/write (with the asymmetric-scoping bug found and fixed live),
+Langfuse tracing on every node + a dataset/experiment eval harness with SDK evaluators and a
+UI-configured LLM-as-a-judge, and **three UIs** (Streamlit, Vite+React+Tailwind, Open WebUI) over
+one FastAPI backend. Every pillar is fail-open so the graph never hard-crashes. As a *dry run*
+for the timed live interview, the per-component wall-clock timing table above is the real
+deliverable — it turns the live-run cut list into a data-driven decision.
+
+What's written this phase:
+- **`coms/linear_PF-002_threatgraph-followups.md`** (git-ignored) — the follow-up backlog in
+  three buckets (Shipped / Next-up stretch / Deferred-with-why), pulled from this log.
+- **`coms/linear_TEMPLATE_prototyping-ticket.md`** (git-ignored) — a reusable, domain-agnostic
+  prototyping-ticket template distilling these operational lessons for future projects.
+- **`docs/ARCHITECTURE_PILLARS.md`** (committed) — maps all 7 pillars + MVP standards A/B/C to
+  concrete `file:path`s with per-pillar demo notes and an honesty ledger of the partials.
+- **`README.md`** (committed) — a consolidated "run all surfaces" section + a pillars pointer.
+
+### Final verification
+
+- `uv run pytest -q` → **170 passed, 3 skipped** (the 3 skips: opt-in `--run-integration`
+  reranker download + 2 docker e2e tests). Green locally, as required (AC9; tests are not gated
+  on Docker).
+- **History clean:** no secret, no `coms/` content, and no reference-only repo
+  (`open-webui/`, `mem0/`, `guardrails/`, …) has entered git history; `.env` stays git-ignored,
+  only `.env.example` placeholders are tracked. `git status` clean of `node_modules/`,
+  `chroma_db/`, `.env`, `coms/`, `open-webui/`.
+
+### Acceptance criteria — AC0–AC9 mapping
+
+- [x] **AC0 — Hygiene:** `.env` git-ignored (only `.env.example` tracked); `coms/` git-ignored
+  (PF-002 + template land there, never committed); reference repos git-ignored. Incremental
+  conventional-commit history on the `glo-21-…` branch; `main` never carries PF-001 domain code.
+- [x] **AC1 — Triage:** Stack triage (core / nice-to-have / out-of-scope, all six pillars) is
+  in the Phase-0 entry above; not every reference repo is integrated (RAGFlow / NeMo / OSS Mem0
+  clone explicitly cut).
+- [x] **AC2 — Backend:** FastAPI hosts the `threatgraph` LangGraph state machine with the
+  specialized nodes (extractor / graph_architect / defensive_guardrail), registered as a sibling
+  agent (`src/agents/threatgraph.py` + one entry in `src/agents/agents.py`).
+- [x] **AC3 — Frontend:** UIs accept unstructured threat text, render the Mermaid attack graph,
+  and show the synthesized defense config — Streamlit (fast path) + React (polished) + Open WebUI.
+- [x] **AC4 — Memory (CORE):** Hosted Mem0 v3 `MemoryClient` wired into the graph, scoped
+  `app_id=perficient-threatgraph`/`user_id=dyrtydata`, auto-extracted facts via `add`/`search`
+  (`src/memory/mem0_client.py`); live write→recall round-trip verified. DQ4 deviation (v3
+  auto-graph, no `enable_graph`/`version="v2"`) documented in the Phase-4 entry.
+- [x] **AC5 — Safety / Guardrails (CORE):** Guardrails-AI Pydantic **output** validation of the
+  defense config is active (`src/agents/guardrails.py`), plus a grounded-mitigation hard-filter.
+  **Caveat:** the `Safeguard` prompt-injection **input** gate is wired at `guard_input` but is
+  **fail-open and currently a NO-OP without `GROQ_API_KEY`** (`Safeguard.model = None` → returns
+  `SAFE`). To activate, set `GROQ_API_KEY` and submit a prompt-injection (see
+  `docs/ARCHITECTURE_PILLARS.md` Pillar 6). Tracked in PF-002.
+- [x] **AC6 — Hybrid RAG (CORE):** Full dense + BM25 → RRF → cross-encoder rerank over the
+  697-record ATT&CK corpus (`src/agents/retrieval.py`), grounding both extraction and defense.
+- [x] **AC7 — Observability:** Langfuse tracing instruments every node automatically via the run
+  config; gated by `LANGFUSE_TRACING=true` (keys already in `.env`).
+- [x] **AC8 — Agent Evaluation (CORE):** Langfuse dataset (`threatgraph-mvp`, 5 items) + experiment
+  scored by in-repo SDK evaluators (mechanics F1 mean 0.714, defense faithfulness mean 1.000;
+  table above). The **LLM-as-a-judge** evaluator is **human-configured in the Langfuse UI** against
+  the captured traces (managed evaluators run forward on new/sampled traces, not retroactively) —
+  see `evals/README.md`. DeepEval red-teaming remains out of scope.
+- [x] **AC9 — Tracking:** Incremental phase-boundary conventional commits; this `PROGRESS.md` kept
+  current with the timing table; README run instructions consolidated; `uv run pytest` green
+  locally (170 passed, 3 skipped).
+
+### Still open for the human (non-blocking)
+
+- **Activate the Safeguard input gate** — add `GROQ_API_KEY` to `.env` to flip the wired-but-
+  dormant prompt-injection gate live (AC5 caveat above).
+- **Executive one-pager (MVP-C)** — the one non-technical deliverable, deferred to PF-002.
+- **File PF-002 into Linear** — from `coms/linear_PF-002_threatgraph-followups.md` (this session is
+  non-interactive; Linear needs OAuth).
