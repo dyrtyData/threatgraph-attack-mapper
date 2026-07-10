@@ -51,6 +51,36 @@ honesty-first mapping of the implementation against a production multi-agent arc
 framework (including partials and known gaps), and [`docs/PROGRESS.md`](docs/PROGRESS.md)
 for the full build log with per-component wall-clock timings.
 
+## Roadmap
+
+The pipeline covers the core multi-agent shape end to end. A number of concrete extensions
+were scoped during design and prioritized for later:
+
+- **Retrieval** — decompose a multi-tactic snippet into per-behavior sub-queries so
+  weakly-lexical techniques aren't under-retrieved; rank/cap mitigations to the most
+  relevant few per technique instead of listing every grounded match; a semantic cache in
+  front of the vector store for latency at scale.
+- **Memory** — a true multi-turn "analyst conversation" mode on top of the existing
+  LangGraph checkpointer, instead of single-shot analysis; visualizing Mem0's graph-memory
+  entities/relations in the UI; checkpoint time-travel (rollback/replay of a run's state).
+- **Engine / routing** — a real LLM gateway (LiteLLM-style) in place of the current static
+  per-node model dispatch table, with complexity-based dynamic routing instead of static
+  per-node model pinning.
+- **Guardrails** — wiring Guardrails AI's `reask`/`fix` loop to a live validator LLM
+  (currently local structural validation + best-effort coercion, kept off the network for
+  speed).
+- **Evaluation** — a larger, more adversarial Langfuse eval set with trajectory-level
+  assertions; an offline DeepEval faithfulness/answer-relevancy pass as a second signal;
+  version-controlled LLM-as-a-judge definitions in code (currently console-configured); a
+  dedicated adversarial/red-teaming suite against the pipeline.
+- **UI** — surfacing per-node latency, token usage, and eval scores inline in the React
+  client (currently only visible in the Langfuse console).
+- **Production readiness** — live threat-feed ingestion in place of pasted/static text;
+  real per-user authentication in place of the shared local dev bearer token;
+  cross-organization agent protocols (A2A/MCP) for distributed, multi-org threat-intel
+  sharing.
+- **Business** — a non-technical, executive-facing one-pager (problem → resolution → ROI).
+
 ## Tech stack
 
 LangGraph · FastAPI · Chroma · BM25 (`rank-bm25`) · Sentence-Transformers cross-encoder ·
