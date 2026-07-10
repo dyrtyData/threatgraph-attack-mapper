@@ -81,6 +81,25 @@ were scoped during design and prioritized for later:
   sharing.
 - **Business** — a non-technical, executive-facing one-pager (problem → resolution → ROI).
 
+**Alternatives considered and passed over** (evaluated at design time, not deferred):
+[RAGFlow](https://github.com/infiniflow/ragflow) as the retrieval stack — the hybrid
+BM25 + dense + rerank pipeline already satisfies the grounding requirement, and adopting a
+full external RAG engine would be a large infra swap with no MVP payoff; and
+[NeMo Guardrails](https://github.com/NVIDIA/NeMo-Guardrails) alongside Guardrails AI — a
+second guardrail framework was judged redundant given Guardrails AI already covers
+structured-output validation.
+
+## Media
+
+- 🧩 [Architecture pillars mind map](<docs/ThreatGraph MindMap.png>) — a visual map of the
+  seven pillars this system is built against.
+- 🖼️ [Threat intelligence processing pipeline infographic](docs/Threat_Intelligence_Processing_Pipeline_Infographic.png) —
+  the guard → retrieve → extract → graph → defend flow at a glance.
+- 🖼️ [Multi-agent security framework pillars infographic](docs/Multi_AI_Agent_Security_Framework_Pillars_infographic.png) —
+  how the pillars map to safety/guardrail concerns specifically.
+- 📊 [Architecting ThreatGraph slide deck](docs/Architecting_ThreatGraph.pptx) — a full
+  walkthrough deck covering the architecture, retrieval design, and evaluation results.
+
 ## Tech stack
 
 LangGraph · FastAPI · Chroma · BM25 (`rank-bm25`) · Sentence-Transformers cross-encoder ·
