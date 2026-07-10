@@ -97,7 +97,7 @@ structured-output validation.
   the guard → retrieve → extract → graph → defend flow at a glance.
 - 🖼️ [Multi-agent security framework pillars infographic](docs/Multi_AI_Agent_Security_Framework_Pillars_infographic.png) —
   how the pillars map to safety/guardrail concerns specifically.
-- 📊 [Architecting ThreatGraph slide deck](docs/Architecting_ThreatGraph.pptx) — a full
+- 📊 [Architecting ThreatGraph slide deck](docs/Architecting_ThreatGraph.pdf) — a full
   walkthrough deck covering the architecture, retrieval design, and evaluation results.
 
 ## Tech stack
